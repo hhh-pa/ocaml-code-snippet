@@ -59,7 +59,7 @@ let () =
       let ct0 = cos (theta0 *. pi /. 180.0) in
       let sts_raw = s0 /. ns in
       let sts = if sts_raw > 1.0 then 1.0 else if sts_raw < -1.0 then -1.0 else sts_raw in
-      let cts = sqrt (max 0.0 (1.0 -. sts *. sts)) in
+      let cts = Float.sqrt (max 0.0 (1.0 -. sts *. sts)) in
       let e0 = if pol = 0 then n0 *. ct0 else n0 /. ct0 in
       let es = if pol = 0 then ns *. cts else ns /. cts in
 
