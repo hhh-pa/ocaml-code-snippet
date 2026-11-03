@@ -57,10 +57,12 @@ let () =
     done;
     let rules = Array.of_list (List.rev !rules) in
     if !idx < Array.length tokens then (
-      let num_queries = int_of_string tokens.(!idx) in
-      incr idx;
-      let m_mod = 1000000007L in
-      for _ = 1 to num_queries do
+      match int_of_string_opt tokens.(!idx) with
+      | None -> ()
+      | Some num_queries ->
+        incr idx;
+        let m_mod = 1000000007L in
+        for _ = 1 to num_queries do
         if !idx < Array.length tokens then (
           let w = tokens.(!idx) in
           incr idx;

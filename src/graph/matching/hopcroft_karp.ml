@@ -11,6 +11,9 @@ let () =
       let v = Scanf.scanf " %d" (fun x -> x) in
       adj.(u) <- v :: adj.(u)
     done;
+    for u = 1 to n do
+      adj.(u) <- List.rev adj.(u)
+    done;
     let pair_u = Array.make (n + 1) 0 in
     let pair_v = Array.make (m + 1) 0 in
     let dist = Array.make (n + 1) 0 in

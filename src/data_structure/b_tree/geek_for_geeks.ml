@@ -1,3 +1,34 @@
+let read_all_tokens () =
+  let content =
+    let b = Buffer.create 4096 in
+    let buf = Bytes.create 4096 in
+    let rec loop () =
+      let n = input stdin buf 0 4096 in
+      if n > 0 then (
+        Buffer.add_subbytes b buf 0 n;
+        loop ()
+      )
+    in
+    loop ();
+    Buffer.contents b
+  in
+  let len = String.length content in
+  let tokens = ref [] in
+  let i = ref 0 in
+  while !i < len do
+    while !i < len && (let c = content.[!i] in c = ' ' || c = '\t' || c = '\r' || c = '\n') do
+      incr i
+    done;
+    if !i < len then (
+      let start = !i in
+      while !i < len && (let c = content.[!i] in c <> ' ' && c <> '\t' && c <> '\r' && c <> '\n') do
+        incr i
+      done;
+      tokens := String.sub content start (!i - start) :: !tokens
+    )
+  done;
+  Array.of_list (List.rev !tokens)
+
 type btree_node = {
   t: int;
   leaf: bool;
@@ -243,13 +274,18 @@ let remove tree k =
       end
 
 let () =
-  try
-    let d = Scanf.scanf " %d" (fun x -> x) in
+  let tokens = read_all_tokens () in
+  if Array.length tokens > 0 then begin
+    let d = int_of_string tokens.(0) in
     let tree = ref None in
-    let rec loop () =
-      let op = Scanf.scanf " %s" (fun x -> x) in
+    let idx = ref 1 in
+    let total = Array.length tokens in
+    while !idx < total do
+      let op = tokens.(!idx) in
+      incr idx;
       if op = "i" then begin
-        let v = Scanf.scanf " %d" (fun x -> x) in
+        let v = int_of_string tokens.(!idx) in
+        incr idx;
         insert tree d v
       end else if op = "t" then begin
         (match !tree with
@@ -257,10 +293,9 @@ let () =
          | None -> ());
         print_newline ()
       end else if op = "r" then begin
-        let v = Scanf.scanf " %d" (fun x -> x) in
+        let v = int_of_string tokens.(!idx) in
+        incr idx;
         remove tree v
-      end;
-      loop ()
-    in
-    loop ()
-  with End_of_file -> ()
+      end
+    done
+  end

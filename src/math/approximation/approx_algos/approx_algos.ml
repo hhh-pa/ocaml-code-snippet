@@ -1,3 +1,5 @@
+module IntSet = Set.Make(Int)
+
 let () =
   try
     let mode = Scanf.scanf " %s" (fun s -> s) in
@@ -118,7 +120,6 @@ let () =
       let eps = Scanf.scanf " %f" (fun x -> x) in
       let vals = Array.init n (fun _ -> Scanf.scanf " %d" (fun x -> x)) in
       let delta = eps /. (2.0 *. float_of_int n) in
-      module IntSet = Set.Make(Int) in
       let l = ref [0] in
       Array.iter (fun x ->
         let m_set = ref (List.fold_left (fun acc v -> IntSet.add v acc) IntSet.empty !l) in

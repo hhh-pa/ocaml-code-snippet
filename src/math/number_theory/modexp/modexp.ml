@@ -17,7 +17,7 @@ let mod_mul a b m =
         in
         loop new_a (Int64.shift_right_logical cur_b 1) new_acc
     in
-    loop (Int64.rem a m) cur_b 0L
+    loop (Int64.rem a m) b 0L
 
 let modpow b e m =
   if m = 1L then 0L

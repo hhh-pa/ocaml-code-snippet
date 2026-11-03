@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Self-contained correctness runner for the OCaml snippet repo.
+"""Self-contained runner and compiler for the OCaml snippet repo.
 
-For every solution script under src/<area>/<problem>/<file>.ml this runs
-either the compiled native binary (via ocamlopt) or `ocaml <file>.ml` once
-per shared test case and diff-compares stdout against the expected output
-(trailing whitespace per line ignored, same as the recipes superproject harness).
+Provides separate compilation and test execution phases with granular
+per-snippet compilation timing, compiler warning tracking, per-test
+execution timing, and comprehensive summaries.
 
 Resources live OUTSIDE this repo (they belong to the recipes superproject).
 Layout expected under --resources DIR:
@@ -14,12 +13,14 @@ Layout expected under --resources DIR:
 
 Usage:
     python3 tests/run_tests.py --resources tests/resources \
-        [--jobs N] [--timeout 120] [--only substring] [--shard I/N] [--no-compile]
+        [--jobs N] [--timeout 120] [--only substring] [--shard I/N] \
+        [--compile-only] [--test-only] [--no-compile]
 
-Shard I/N runs only the deterministic slice of the sorted task list
-(task index mod N == I-1), so CI can split the suite across jobs.
-
-Exit status is non-zero when any case fails or a case is missing resources.
+Options:
+    --compile-only  Only compile needed snippets; report compile times & warnings
+    --test-only     Only execute tests using previously compiled binaries
+    --no-compile    Run using the ocaml interpreter instead of native ocamlopt
+    --shard I/N     Run deterministic slice (1 <= I <= N)
 """
 
 import argparse
@@ -28,6 +29,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -64,19 +66,35 @@ def discover(resources_root):
 
 
 def compile_snippet(script_path, bin_path, obj_dir):
-    """Compile an OCaml script to a native binary using ocamlopt."""
+    """Compile an OCaml script to a native binary using ocamlopt.
+
+    Returns (elapsed_seconds, warnings_list, error_or_none).
+    """
     os.makedirs(os.path.dirname(bin_path), exist_ok=True)
     os.makedirs(obj_dir, exist_ok=True)
     cmd = ["ocamlopt", "-O2", "-o", os.path.abspath(bin_path), os.path.abspath(script_path)]
-    proc = subprocess.run(cmd, cwd=obj_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    t0 = time.perf_counter()
+    try:
+        proc = subprocess.run(cmd, cwd=obj_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        return 0.0, [], f"compiler not found: {cmd[0]}"
+    elapsed = time.perf_counter() - t0
+
+    stderr_text = proc.stderr.decode(errors="ignore").strip()
+    warnings = []
+    if "Warning" in stderr_text or "warning" in stderr_text:
+        warnings = [line for line in stderr_text.splitlines() if "Warning" in line or "warning" in line]
+
     if proc.returncode != 0:
-        err = proc.stderr.decode(errors="ignore").strip()
-        return f"compile error (exit {proc.returncode}): {err}"
-    return None
+        return elapsed, warnings, f"compile error (exit {proc.returncode}):\n{stderr_text}"
+    return elapsed, warnings, None
 
 
 def run_case(cmd, case_name, input_path, output_path, timeout):
+    """Run a single test case. Returns (elapsed_seconds, error_or_none)."""
     with open(input_path, "rb") as fd:
+        t0 = time.perf_counter()
         try:
             proc = subprocess.run(
                 cmd,
@@ -86,17 +104,23 @@ def run_case(cmd, case_name, input_path, output_path, timeout):
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired:
-            return f"TIMEOUT (>{timeout}s)"
+            elapsed = time.perf_counter() - t0
+            return elapsed, f"TIMEOUT (>{timeout}s)"
+        except FileNotFoundError:
+            elapsed = time.perf_counter() - t0
+            return elapsed, f"executable not found: {cmd[0]}"
+    elapsed = time.perf_counter() - t0
+
     if proc.returncode != 0:
         tail = proc.stderr.decode(errors="ignore").strip().splitlines()
-        return "exit {}: {}".format(proc.returncode, tail[-1] if tail else "no stderr")
+        return elapsed, "exit {}: {}".format(proc.returncode, tail[-1] if tail else "no stderr")
     with open(output_path, "rb") as fd:
         expected = normalize(fd.read())
     if normalize(proc.stdout) != expected:
         got = normalize(proc.stdout).decode(errors="ignore")
         want = expected.decode(errors="ignore")
-        return "output mismatch: expected {!r} got {!r}".format(want[:200], got[:200])
-    return None
+        return elapsed, "output mismatch: expected {!r} got {!r}".format(want[:200], got[:200])
+    return elapsed, None
 
 
 def main(argv=None):
@@ -107,6 +131,8 @@ def main(argv=None):
     parser.add_argument("--only", default="", help="substring filter on area/problem")
     parser.add_argument("--shard", default="", help="shard slice I/N (1-based I)")
     parser.add_argument("--no-compile", action="store_true", help="run with ocaml interpreter instead of ocamlopt")
+    parser.add_argument("--compile-only", action="store_true", help="only compile snippets, report compile timing")
+    parser.add_argument("--test-only", action="store_true", help="only run test cases with existing binaries")
     args = parser.parse_args(argv)
 
     shard_index, shard_total = 0, 1
@@ -127,12 +153,13 @@ def main(argv=None):
 
     tasks = []
     missing = []
-    script_map = {}  # script -> list of tasks
+    snippet_labels = {}  # script -> label
 
     for area, problem, stem, script, cases in discover(args.resources):
         label = f"{area}/{problem}/{stem}" if problem != stem else f"{area}/{problem}"
         if args.only and args.only not in label and args.only not in script:
             continue
+        snippet_labels[script] = label
         if not cases:
             missing.append(label)
             continue
@@ -142,41 +169,92 @@ def main(argv=None):
     tasks = sorted(tasks)
     if shard_total > 1:
         tasks = [task for index, task in enumerate(tasks) if index % shard_total == shard_index]
-    total = len(tasks)
+    total_cases = len(tasks)
     needed_scripts = sorted({t[2] for t in tasks})
-    print("ocaml tests: {} cases{} ({} problems, {} snippets)".format(
-        total,
-        " [shard {}/{}]".format(shard_index + 1, shard_total) if shard_total > 1 else "",
-        len({label for label, _, _, _, _ in tasks}),
-        len(needed_scripts),
-    ), flush=True)
+    shard_str = " [shard {}/{}]".format(shard_index + 1, shard_total) if shard_total > 1 else ""
 
-    # Compile needed scripts if ocamlopt is available
+    print(f"OCaml suite{shard_str}: {total_cases} test cases across {len(needed_scripts)} snippets", flush=True)
+
+    build_base = os.path.join(ROOT, "_build")
     binaries = {}
     compile_failures = {}
-    if has_ocamlopt:
-        print(f"Compiling {len(needed_scripts)} snippets with ocamlopt -O2...", flush=True)
-        build_base = os.path.join(ROOT, "_build")
-        def _compile(script):
-            rel = os.path.relpath(script, os.path.join(ROOT, "src"))
-            rel_stem = os.path.splitext(rel)[0]
-            bin_path = os.path.join(build_base, "bin", rel_stem)
-            obj_dir = os.path.join(build_base, "obj", rel_stem)
-            err = compile_snippet(script, bin_path, obj_dir)
-            return script, bin_path, err
+    compile_timings = {}
+    compile_warnings = {}
 
-        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            futures = [pool.submit(_compile, s) for s in needed_scripts]
-            for fut in as_completed(futures):
-                script, bin_path, err = fut.result()
-                if err:
-                    compile_failures[script] = err
-                else:
-                    binaries[script] = bin_path
+    # Determine binary path for each script
+    for s in needed_scripts:
+        rel = os.path.relpath(s, os.path.join(ROOT, "src"))
+        rel_stem = os.path.splitext(rel)[0]
+        bin_path = os.path.join(build_base, "bin", rel_stem)
+        binaries[s] = bin_path
+
+    # =========================================================================
+    # PHASE 1: COMPILATION
+    # =========================================================================
+    if not args.test_only:
+        if has_ocamlopt:
+            print(f"\n=== Compilation Phase (ocamlopt -O2, jobs={args.jobs}) ===", flush=True)
+            t_comp_start = time.perf_counter()
+
+            def _compile_task(script):
+                rel = os.path.relpath(script, os.path.join(ROOT, "src"))
+                rel_stem = os.path.splitext(rel)[0]
+                bin_path = binaries[script]
+                obj_dir = os.path.join(build_base, "obj", rel_stem)
+                elapsed, warns, err = compile_snippet(script, bin_path, obj_dir)
+                return script, elapsed, warns, err
+
+            done_comp = 0
+            with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+                futures = [pool.submit(_compile_task, s) for s in needed_scripts]
+                for fut in as_completed(futures):
+                    script, elapsed, warns, err = fut.result()
+                    done_comp += 1
+                    label = snippet_labels.get(script, script)
+                    compile_timings[script] = elapsed
+                    if warns:
+                        compile_warnings[script] = warns
+
+                    if err:
+                        compile_failures[script] = err
+                        print(f"FAIL COMPILE {label} [{elapsed:.3f}s] [{done_comp}/{len(needed_scripts)}]:\n{err}", flush=True)
+                    else:
+                        warn_tag = f" ({len(warns)} warnings)" if warns else ""
+                        print(f"COMPILED     {label} [{elapsed:.3f}s]{warn_tag} [{done_comp}/{len(needed_scripts)}]", flush=True)
+                        if warns:
+                            for w in warns:
+                                print(f"  warning: {w}", flush=True)
+
+            t_comp_wall = time.perf_counter() - t_comp_start
+            sum_comp_time = sum(compile_timings.values())
+            avg_comp = sum_comp_time / len(needed_scripts) if needed_scripts else 0.0
+
+            print("\n=== Compilation Summary ===")
+            print(f"Total snippets : {len(needed_scripts)}")
+            print(f"Compiled       : {len(needed_scripts) - len(compile_failures)} in {t_comp_wall:.2f}s wall time (sum {sum_comp_time:.2f}s, avg {avg_comp:.3f}s/snippet)")
+            print(f"Compile errors : {len(compile_failures)}")
+            print(f"Snippets w/warn: {len(compile_warnings)}")
+            print("===========================\n", flush=True)
+
+            if compile_failures and args.compile_only:
+                return 1
+        elif args.compile_only:
+            print("warning: ocamlopt not found; skipping native compilation", file=sys.stderr)
+            return 0
+
+    if args.compile_only:
+        return 1 if compile_failures else 0
+
+    # =========================================================================
+    # PHASE 2: TEST EXECUTION
+    # =========================================================================
+    print(f"\n=== Test Execution Phase (jobs={args.jobs}, timeout={args.timeout}s) ===", flush=True)
+    t_test_start = time.perf_counter()
 
     failures = []
     passed = 0
     done = 0
+    test_timings = []
 
     run_tasks = []
     for label, case_name, script, inp, outp in tasks:
@@ -185,7 +263,7 @@ def main(argv=None):
             print("FAIL {}/{}: {}".format(label, case_name, compile_failures[script]), flush=True)
             done += 1
             continue
-        if has_ocamlopt and script in binaries:
+        if has_ocamlopt and os.path.isfile(binaries[script]):
             cmd = [binaries[script]]
         else:
             cmd = ["ocaml", script]
@@ -198,24 +276,34 @@ def main(argv=None):
         }
         for future in as_completed(futures):
             label, case = futures[future]
-            error = future.result()
+            elapsed, error = future.result()
             done += 1
+            test_timings.append(elapsed)
             if error is None:
                 passed += 1
-                print("PASS {}/{} [{}/{}]".format(label, case, done, total), flush=True)
+                print("PASS {}/{} in {:.3f}s [{}/{}]".format(label, case, elapsed, done, total_cases), flush=True)
             else:
                 failures.append("{}/{}: {}".format(label, case, error))
-                print("FAIL {}/{} [{}/{}]: {}".format(label, case, done, total, error), flush=True)
+                print("FAIL {}/{} in {:.3f}s [{}/{}]: {}".format(label, case, elapsed, done, total_cases, error), flush=True)
+
+    t_test_wall = time.perf_counter() - t_test_start
+    sum_test_time = sum(test_timings)
+    avg_test = sum_test_time / len(test_timings) if test_timings else 0.0
 
     for label in missing:
         failures.append("{}: no resources found".format(label))
     for failure in sorted(failures):
         print("FAIL", failure)
-    print(
-        "ocaml tests: {} passed, {} failed, {} missing-resource problems".format(
-            passed, len(failures) - len(missing), len(missing)
-        )
-    )
+
+    print("\n=== Test Execution Summary ===")
+    print(f"Total test cases : {total_cases}")
+    print(f"Passed           : {passed} in {t_test_wall:.2f}s wall time (sum {sum_test_time:.2f}s, avg {avg_test:.4f}s/test)")
+    print(f"Failed           : {len(failures) - len(missing)}")
+    print(f"Missing resources: {len(missing)}")
+    if not args.test_only and has_ocamlopt:
+        print(f"Total pipeline   : {t_comp_wall + t_test_wall:.2f}s (compilation: {t_comp_wall:.2f}s, tests: {t_test_wall:.2f}s)")
+    print("==============================\n", flush=True)
+
     return 1 if failures else 0
 
 

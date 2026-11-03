@@ -235,7 +235,8 @@ let solve_case () =
         first := false
       ) sorted_ra;
       Printf.printf "\n"
-    done) !plan
+    ) !plan
+  end
 
 let () =
   try

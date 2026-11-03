@@ -1,3 +1,34 @@
+let read_all_tokens () =
+  let content =
+    let b = Buffer.create 4096 in
+    let buf = Bytes.create 4096 in
+    let rec loop () =
+      let n = input stdin buf 0 4096 in
+      if n > 0 then (
+        Buffer.add_subbytes b buf 0 n;
+        loop ()
+      )
+    in
+    loop ();
+    Buffer.contents b
+  in
+  let len = String.length content in
+  let tokens = ref [] in
+  let i = ref 0 in
+  while !i < len do
+    while !i < len && (let c = content.[!i] in c = ' ' || c = '\t' || c = '\r' || c = '\n') do
+      incr i
+    done;
+    if !i < len then (
+      let start = !i in
+      while !i < len && (let c = content.[!i] in c <> ' ' && c <> '\t' && c <> '\r' && c <> '\n') do
+        incr i
+      done;
+      tokens := String.sub content start (!i - start) :: !tokens
+    )
+  done;
+  Array.of_list (List.rev !tokens)
+
 type index_min_pq = {
   n: int;
   mutable sz: int;
@@ -87,34 +118,44 @@ let erase pq i =
   pq.qp.(i) <- -1
 
 let () =
-  try
-    let n = Scanf.scanf " %d" (fun x -> x) in
-    let q = Scanf.scanf " %d" (fun x -> x) in
+  let tokens = read_all_tokens () in
+  if Array.length tokens >= 2 then begin
+    let n = int_of_string tokens.(0) in
+    let q = int_of_string tokens.(1) in
     let pq = make_pq n in
+    let idx = ref 2 in
     for _ = 1 to q do
-      let op = Scanf.scanf " %d" (fun x -> x) in
-      if op = 1 then
-        let idx = Scanf.scanf " %d" (fun x -> x) in
-        let k = Scanf.scanf " %Ld" (fun x -> x) in
-        if idx >= 0 && idx < n then insert pq idx k
-      else if op = 2 then
-        if pq.sz = 0 then Printf.printf "EMPTY\n"
-        else Printf.printf "%d\n" (min_index pq)
-      else if op = 3 then
-        if pq.sz = 0 then Printf.printf "EMPTY\n"
-        else Printf.printf "%d\n" (del_min pq)
-      else if op = 4 then
-        let idx = Scanf.scanf " %d" (fun x -> x) in
-        if has pq idx then begin
-          erase pq idx;
-          Printf.printf "OK\n"
-        end else
-          Printf.printf "NONE\n"
-      else if op = 5 then
-        let idx = Scanf.scanf " %d" (fun x -> x) in
-        if has pq idx then
-          Printf.printf "%Ld\n" pq.keys.(idx)
-        else
-          Printf.printf "NONE\n"
+      if !idx < Array.length tokens then begin
+        let op = int_of_string tokens.(!idx) in
+        incr idx;
+        match op with
+        | 1 ->
+          let i = int_of_string tokens.(!idx) in
+          let k = Int64.of_string tokens.(!idx + 1) in
+          idx := !idx + 2;
+          if i >= 0 && i < n then insert pq i k
+        | 2 ->
+          if pq.sz = 0 then Printf.printf "EMPTY\n"
+          else Printf.printf "%d\n" (min_index pq)
+        | 3 ->
+          if pq.sz = 0 then Printf.printf "EMPTY\n"
+          else Printf.printf "%d\n" (del_min pq)
+        | 4 ->
+          let i = int_of_string tokens.(!idx) in
+          incr idx;
+          if has pq i then begin
+            erase pq i;
+            Printf.printf "OK\n"
+          end else
+            Printf.printf "NONE\n"
+        | 5 ->
+          let i = int_of_string tokens.(!idx) in
+          incr idx;
+          if has pq i then
+            Printf.printf "%Ld\n" pq.keys.(i)
+          else
+            Printf.printf "NONE\n"
+        | _ -> ()
+      end
     done
-  with End_of_file -> ()
+  end

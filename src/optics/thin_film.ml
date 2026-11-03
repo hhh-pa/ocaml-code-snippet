@@ -35,7 +35,7 @@ let () =
       for j = 0 to l_cnt - 1 do
         let st_raw = s0 /. nn.(j) in
         let st = if st_raw > 1.0 then 1.0 else if st_raw < -1.0 then -1.0 else st_raw in
-        let ct = sqrt (max 0.0 (1.0 -. st *. st)) in
+        let ct = Float.sqrt (max 0.0 (1.0 -. st *. st)) in
         let eta = if pol = 0 then nn.(j) *. ct else nn.(j) /. ct in
         let delta = 2.0 *. pi *. nn.(j) *. dd.(j) *. ct /. lambda_val in
         let c_val = cos delta in

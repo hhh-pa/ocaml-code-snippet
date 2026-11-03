@@ -19,13 +19,14 @@ let push h x =
   let idx = h.sz in
   h.sz <- h.sz + 1;
   let k = ref idx in
-  while !k > 0 do
+  let cont = ref true in
+  while !k > 0 && !cont do
     let p = (!k - 1) / 2 in
     if compare x h.data.(p) < 0 then begin
       h.data.(!k) <- h.data.(p);
       k := p
     end else
-      k := 0
+      cont := false
   done;
   h.data.(!k) <- x
 

@@ -94,47 +94,53 @@ let () =
 
     let start_set = epsilon_closure (IntSet.singleton start_state) in
     let dfa_state_map = ref (StateSetMap.singleton start_set 0) in
-    let dfa_states = ref [start_set] in
     let start_acc = IntSet.exists (fun s -> IntSet.mem s !nfa_accept) start_set in
-    let dfa_accept = ref [start_acc] in
-    let dfa_trans = ref [Hashtbl.create 4] in
+    let dfa_states = Hashtbl.create 64 in
+    let dfa_trans = Hashtbl.create 64 in
+    let dfa_accept = Hashtbl.create 64 in
+    Hashtbl.add dfa_states 0 start_set;
+    Hashtbl.add dfa_trans 0 (Hashtbl.create 4);
+    Hashtbl.add dfa_accept 0 start_acc;
+    let dfa_count = ref 1 in
 
     let work_queue = Queue.create () in
     Queue.push 0 work_queue;
 
     while not (Queue.is_empty work_queue) do
       let curr_id = Queue.pop work_queue in
-      let curr_set = List.nth !dfa_states curr_id in
-      let curr_trans = List.nth !dfa_trans curr_id in
+      let curr_set = Hashtbl.find dfa_states curr_id in
+      let curr_trans = Hashtbl.find dfa_trans curr_id in
 
       List.iter (fun c ->
         let moved = move_states curr_set c in
-        let nxt = epsilon_closure moved in
-        if not (IntSet.is_empty nxt) then (
-          let nxt_id =
-            match StateSetMap.find_opt nxt !dfa_state_map with
-            | Some id -> id
-            | None ->
-              let id = List.length !dfa_states in
-              dfa_state_map := StateSetMap.add nxt id !dfa_state_map;
-              dfa_states := !dfa_states @ [nxt];
-              let is_acc = IntSet.exists (fun s -> IntSet.mem s !nfa_accept) nxt in
-              dfa_accept := !dfa_accept @ [is_acc];
-              dfa_trans := !dfa_trans @ [Hashtbl.create 4];
-              Queue.push id work_queue;
-              id
-          in
-          Hashtbl.replace curr_trans c nxt_id
+        if not (IntSet.is_empty moved) then (
+          let nxt = epsilon_closure moved in
+          if not (IntSet.is_empty nxt) then (
+            let nxt_id =
+              match StateSetMap.find_opt nxt !dfa_state_map with
+              | Some id -> id
+              | None ->
+                let id = !dfa_count in
+                incr dfa_count;
+                dfa_state_map := StateSetMap.add nxt id !dfa_state_map;
+                Hashtbl.add dfa_states id nxt;
+                let is_acc = IntSet.exists (fun s -> IntSet.mem s !nfa_accept) nxt in
+                Hashtbl.add dfa_accept id is_acc;
+                Hashtbl.add dfa_trans id (Hashtbl.create 4);
+                Queue.push id work_queue;
+                id
+            in
+            Hashtbl.replace curr_trans c nxt_id
+          )
         )
       ) alphabet
     done;
 
-    let num_dfa_states = List.length !dfa_states in
-    let dfa_acc_arr = Array.of_list !dfa_accept in
-    let dfa_trans_arr = Array.of_list !dfa_trans in
-
+    let num_dfa_states = !dfa_count in
     let acc_count = ref 0 in
-    Array.iter (fun b -> if b then incr acc_count) dfa_acc_arr;
+    for id = 0 to num_dfa_states - 1 do
+      if Hashtbl.find dfa_accept id then incr acc_count
+    done;
 
     Printf.printf "DFA states: %d\n" num_dfa_states;
     Printf.printf "DFA accept states: %d\n" !acc_count;
@@ -153,17 +159,18 @@ let () =
           let i = ref 0 in
           while !ok && !i < len do
             let ch = w.[!i] in
-            match Hashtbl.find_opt dfa_trans_arr.(!state) ch with
+            let cur_t = Hashtbl.find dfa_trans !state in
+            (match Hashtbl.find_opt cur_t ch with
             | Some nxt -> state := nxt
-            | None -> ok := false
-          ;
-          incr i
-        done;
-        if !ok && dfa_acc_arr.(!state) then
-          Printf.printf "ACCEPT\n"
-        else
-          Printf.printf "REJECT\n"
-      )
-    done
+            | None -> ok := false);
+            incr i
+          done;
+          if !ok && Hashtbl.find dfa_accept !state then
+            Printf.printf "ACCEPT\n"
+          else
+            Printf.printf "REJECT\n"
+        )
+      done
+    )
   )
 )

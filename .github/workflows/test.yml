@@ -50,8 +50,11 @@ jobs:
             --passphrase "$RESOURCES_PASSPHRASE" \
             -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
 
-      - name: Run OCaml snippet tests
-        run: python3 tests/run_tests.py --resources tests/resources --jobs 4 --timeout 300 --shard ${{ matrix.shard }}/4
+      - name: Compile OCaml snippets
+        run: python3 tests/run_tests.py --resources tests/resources --jobs 4 --shard ${{ matrix.shard }}/4 --compile-only
+
+      - name: Run OCaml tests
+        run: python3 tests/run_tests.py --resources tests/resources --jobs 4 --timeout 300 --shard ${{ matrix.shard }}/4 --test-only
 
   # Aggregator: branch policy requires a check literally named "test",
   # which the sharded matrix above no longer produces on its own.

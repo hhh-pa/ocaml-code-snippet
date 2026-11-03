@@ -19,7 +19,7 @@ let () =
     done;
     let has_arbitrage = ref false in
     Array.iter (fun (u, v, w) ->
-      if d.(u) +. w < d.(v) - 1e-9 then
+      if d.(u) +. w < d.(v) -. 1e-9 then
         has_arbitrage := true
       else if d.(u) +. w < d.(v) then
         has_arbitrage := true

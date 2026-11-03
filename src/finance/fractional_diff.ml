@@ -27,14 +27,14 @@ let () =
       w.(k) <- -. w.(k - 1) *. (d -. float_of_int k +. 1.0) /. float_of_int k
     done;
     Printf.printf "W:";
-    Array.iter (fun v -> Printf.printf " %.6f" (v +. 0.0)) w;
+    Array.iter (fun v -> Printf.printf " %.6f" v) w;
     Printf.printf "\nY:";
     for t = l - 1 to m - 1 do
       let s = ref 0.0 in
       for k = 0 to l - 1 do
         s := !s +. w.(k) *. x.(t - k)
       done;
-      Printf.printf " %.6f" (!s +. 0.0)
+      Printf.printf " %.6f" !s
     done;
     Printf.printf "\n"
   end

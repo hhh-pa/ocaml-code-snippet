@@ -41,7 +41,8 @@ let heap_pop h =
     let x = h.data.(h.size) in
     let i = ref 0 in
     let half = h.size / 2 in
-    while !i < half do
+    let cont = ref true in
+    while !i < half && !cont do
       let left = 2 * !i + 1 in
       let right = left + 1 in
       let best =
@@ -52,7 +53,7 @@ let heap_pop h =
         h.data.(!i) <- h.data.(best);
         i := best
       end else
-        i := h.size
+        cont := false
     done;
     h.data.(!i) <- x
   end;
