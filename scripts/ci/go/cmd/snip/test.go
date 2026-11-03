@@ -359,7 +359,7 @@ func runTest(argv []string) int {
 					caseErr = fmt.Sprintf("TIMEOUT (>%ds)", timeout)
 				} else {
 					var exitErr *exec.ExitError
-					if ok := isExitError(runErr, &exitErr); ok {
+					if errors.As(runErr, &exitErr) {
 						tail := string(bytes.TrimSpace(stderr))
 						caseErr = fmt.Sprintf("exit %d: %s", exitErr.ExitCode(), tail)
 					} else {

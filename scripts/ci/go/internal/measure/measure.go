@@ -2,6 +2,7 @@ package measure
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -56,7 +57,7 @@ func MeasureCaseCallgrind(hasValgrind bool, execCmd []string, inputPath, outputP
 				return nil, fmt.Errorf("TIMEOUT (>%ds)", timeoutSecs)
 			}
 			var exitErr *exec.ExitError
-			if ok := isExitError(runErr, &exitErr); ok {
+			if errors.As(runErr, &exitErr) {
 				tail := string(bytes.TrimSpace(stderr))
 				return nil, fmt.Errorf("exit %d: %s", exitErr.ExitCode(), tail)
 			}
@@ -98,12 +99,4 @@ func MeasureCaseCallgrind(hasValgrind bool, execCmd []string, inputPath, outputP
 		Runs:         repeat,
 	}
 	return summary, nil
-}
-
-func isExitError(err error, target **exec.ExitError) bool {
-	if ee, ok := err.(*exec.ExitError); ok {
-		*target = ee
-		return true
-	}
-	return false
 }
