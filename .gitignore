@@ -9,3 +9,14 @@ _build/
 *.byte
 *.native
 .merlin
+
+# Test resources (extracted from encrypted bundle)
+tests/resources/
+
+# Performance and benchmark outputs
+perf-results*.json
+bencher-bmf*.json
+
+# Python caches
+__pycache__/
+*.pyc

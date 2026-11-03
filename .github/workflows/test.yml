@@ -1,0 +1,206 @@
+name: ocaml-snippets
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# Test data (recipes superproject resource/shared) ships as an encrypted
+# bundle, tests/resources.tar.xz.asc (tar.xz, AES-256, ASCII-armored).
+# The passphrase lives in the RESOURCES_PASSPHRASE repository secret.
+# To rotate: run tools/build_bundle.sh with a fresh passphrase and set
+# the secret to the same value (see the script header).
+
+jobs:
+  test-shard:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    name: test (shard ${{ matrix.shard }}/4)
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/profile-runner
+        with:
+          cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install OCaml
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+        with:
+          packages: ocaml ocaml-native-compilers
+          version: 1.0
+
+      - name: Decrypt and extract resources
+        env:
+          RESOURCES_PASSPHRASE: ${{ secrets.RESOURCES_PASSPHRASE }}
+        run: |
+          if [ -z "$RESOURCES_PASSPHRASE" ]; then
+            echo "error: RESOURCES_PASSPHRASE secret is not configured" >&2
+            exit 1
+          fi
+          mkdir -p tests/resources
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$RESOURCES_PASSPHRASE" \
+            -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
+
+      - name: Run OCaml snippet tests
+        run: python3 tests/run_tests.py --resources tests/resources --jobs 4 --timeout 300 --shard ${{ matrix.shard }}/4
+
+  # Aggregator: branch policy requires a check literally named "test",
+  # which the sharded matrix above no longer produces on its own.
+  test:
+    needs: test-shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all shards green
+        run: |
+          if [ "${{ needs.test-shard.result }}" = "success" ]; then exit 0; else exit 1; fi
+
+  perf-callgrind:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    name: perf-callgrind (shard ${{ matrix.shard }}/4)
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/profile-runner
+        with:
+          cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install OCaml and Valgrind
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+        with:
+          packages: ocaml ocaml-native-compilers valgrind
+          version: 1.0
+
+      - name: Decrypt and extract resources
+        env:
+          RESOURCES_PASSPHRASE: ${{ secrets.RESOURCES_PASSPHRASE }}
+        run: |
+          if [ -z "$RESOURCES_PASSPHRASE" ]; then
+            echo "error: RESOURCES_PASSPHRASE secret is not configured" >&2
+            exit 1
+          fi
+          mkdir -p tests/resources
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$RESOURCES_PASSPHRASE" \
+            -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
+
+      - name: Measure performance (Callgrind instructions)
+        run: |
+          python3 tools/measure.py --resources tests/resources \
+            --repeat 1 --jobs 2 --timeout 300 \
+            --shard ${{ matrix.shard }}/4 \
+            --output perf-results.json --bmf-output bencher-bmf.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Install Bencher CLI
+        if: env.BENCHER_API_KEY != ''
+        env:
+          BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
+        uses: bencherdev/bencher@main
+
+      - name: Track benchmarks with Bencher
+        if: env.BENCHER_API_KEY != ''
+        env:
+          BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            bencher run \
+              --project ocaml-code-snippet \
+              --key '${{ secrets.BENCHER_API_KEY }}' \
+              --branch "${{ github.head_ref }}" \
+              --hash "${{ github.event.pull_request.head.sha }}" \
+              --start-point "${{ github.base_ref }}" \
+              --start-point-hash "${{ github.event.pull_request.base.sha }}" \
+              --start-point-clone-thresholds \
+              --testbed ubuntu-latest-ocaml \
+              --adapter json \
+              --file bencher-bmf.json \
+              --github-actions "${{ secrets.GITHUB_TOKEN }}"
+          else
+            bencher run \
+              --project ocaml-code-snippet \
+              --key '${{ secrets.BENCHER_API_KEY }}' \
+              --branch "${{ github.ref_name }}" \
+              --testbed ubuntu-latest-ocaml \
+              --threshold-measure instructions \
+              --threshold-test percentage \
+              --threshold-min-sample-size 10 \
+              --threshold-max-sample-size 64 \
+              --threshold-upper-boundary 0.10 \
+              --adapter json \
+              --file bencher-bmf.json \
+              --github-actions "${{ secrets.GITHUB_TOKEN }}"
+          fi
+
+      - name: Upload perf results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-results-shard-${{ matrix.shard }}
+          path: |
+            perf-results.json
+            bencher-bmf.json
+
+  report:
+    needs: perf-callgrind
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/profile-runner
+        with:
+          cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download shard results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: perf-results-shard-*
+
+      - name: Merge shard reports
+        run: |
+          python3 tools/measure.py --merge perf-results-*/perf-results.json \
+            --output perf-results-merged.json \
+            --bmf-output bencher-bmf-merged.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify merge matches per-shard BMFs
+        run: |
+          jq -s 'add' perf-results-*/bencher-bmf.json > bencher-bmf-jq.json
+          diff <(jq -S . bencher-bmf-merged.json) <(jq -S . bencher-bmf-jq.json)
+
+      - name: Upload merged results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-results-merged
+          path: |
+            perf-results-merged.json
+            bencher-bmf-merged.json
