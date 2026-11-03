@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hhh-pa/clojure/scripts/ci/go/internal/cmdtest"
+	"github.com/hhh-pa/ocaml-code-snippet/scripts/ci/go/internal/cmdtest"
 )
 
 func TestProbeCommon(t *testing.T) {

@@ -1,0 +1,32 @@
+name: snip-tools
+description: >
+  Provide the snip binary (the Go replacement for the repo's
+  Python/shell tooling) from a prebuilt binary kept in the Actions
+  cache (rebuilt on miss, like profile-runner); no external dependencies
+  beyond setup-go. Callers invoke snip-bin/snip themselves.
+inputs:
+  cache-key:
+    description: >
+      Full cache key for the prebuilt snip binary, shared by every
+      job on the OS: snip-<os>-<hash>, where the hash covers this
+      action's sources plus exactly the Go inputs the build reads
+      (go.mod, cmd/snip, internal packages).
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: cache
+      uses: actions/cache@v5
+      with:
+        path: snip-bin
+        key: ${{ inputs.cache-key }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: scripts/ci/go/go.mod
+        cache: false
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE/scripts/ci/go"
+        CGO_ENABLED=0 go build -o "$GITHUB_WORKSPACE/snip-bin/snip" ./cmd/snip

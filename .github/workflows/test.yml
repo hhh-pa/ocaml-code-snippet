@@ -9,8 +9,8 @@ on:
 # Test data (recipes superproject resource/shared) ships as an encrypted
 # bundle, tests/resources.tar.xz.asc (tar.xz, AES-256, ASCII-armored).
 # The passphrase lives in the RESOURCES_PASSPHRASE repository secret.
-# To rotate: run tools/build_bundle.sh with a fresh passphrase and set
-# the secret to the same value (see the script header).
+# To rotate: run `snip bundle` with a fresh passphrase and set
+# the secret to the same value (see `snip bundle --help`).
 
 jobs:
   test-shard:
@@ -25,11 +25,9 @@ jobs:
       - uses: ./.github/actions/profile-runner
         with:
           cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: ./.github/actions/snip-tools
         with:
-          python-version: '3.11'
+          cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/**') }}
 
       - name: Install OCaml
         uses: awalsh128/cache-apt-pkgs-action@v1.6.3
@@ -51,10 +49,10 @@ jobs:
             -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
 
       - name: Compile OCaml snippets
-        run: python3 tests/run_tests.py --resources tests/resources --jobs 4 --shard ${{ matrix.shard }}/4 --compile-only
+        run: '"$GITHUB_WORKSPACE/snip-bin/snip" test --resources tests/resources --jobs 4 --shard ${{ matrix.shard }}/4 --compile-only'
 
       - name: Run OCaml tests
-        run: python3 tests/run_tests.py --resources tests/resources --jobs 4 --timeout 300 --shard ${{ matrix.shard }}/4 --test-only
+        run: '"$GITHUB_WORKSPACE/snip-bin/snip" test --resources tests/resources --jobs 4 --timeout 300 --shard ${{ matrix.shard }}/4 --test-only'
 
   # Aggregator: branch policy requires a check literally named "test",
   # which the sharded matrix above no longer produces on its own.
@@ -84,11 +82,9 @@ jobs:
       - uses: ./.github/actions/profile-runner
         with:
           cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: ./.github/actions/snip-tools
         with:
-          python-version: '3.11'
+          cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/**') }}
 
       - name: Install OCaml and Valgrind
         uses: awalsh128/cache-apt-pkgs-action@v1.6.3
@@ -111,7 +107,7 @@ jobs:
 
       - name: Measure performance (Callgrind instructions)
         run: |
-          python3 tools/measure.py --resources tests/resources \
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
             --repeat 1 --jobs 2 --timeout 300 \
             --shard ${{ matrix.shard }}/4 \
             --output perf-results.json --bmf-output bencher-bmf.json \
@@ -176,11 +172,9 @@ jobs:
       - uses: ./.github/actions/profile-runner
         with:
           cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: ./.github/actions/snip-tools
         with:
-          python-version: '3.11'
+          cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/**') }}
 
       - name: Download shard results
         uses: actions/download-artifact@v8
@@ -189,7 +183,7 @@ jobs:
 
       - name: Merge shard reports
         run: |
-          python3 tools/measure.py --merge perf-results-*/perf-results.json \
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure --merge perf-results-*/perf-results.json \
             --output perf-results-merged.json \
             --bmf-output bencher-bmf-merged.json \
             --summary-file "$GITHUB_STEP_SUMMARY"

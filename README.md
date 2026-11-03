@@ -24,14 +24,14 @@ Some code examples have been moved to a **private repository** as a precautionar
 
 To respect the rights of original content creators, **test cases are not included** in this repository in plain form. Instead, they can be found on the websites where the referenced problems originate.
 
-For automated validation, the shared test cases from the recipes superproject (`resource/shared`) ship as an encrypted bundle, `tests/resources.tar.xz.asc` (tar.xz, AES-256, ASCII-armored). `tests/run_tests.py` runs every `src/**/*.ml` script against the decrypted cases and diff-compares stdout against the expected output (trailing whitespace per line ignored).
+For automated validation, the shared test cases from the recipes superproject (`resource/shared`) ship as an encrypted bundle, `tests/resources.tar.xz.asc` (tar.xz, AES-256, ASCII-armored). All testing and measuring tools are written in Go under `scripts/ci/go` (compiled into a single cached `snip` binary). `snip test` runs every `src/**/*.ml` script against the decrypted cases and diff-compares stdout against the expected output (trailing whitespace per line ignored).
 
 ### CI/CD Pipeline
 
 `.github/workflows/test.yml` validates the snippets on push to `master`, pull requests, and manual dispatch. It decrypts the bundle with the `RESOURCES_PASSPHRASE` repository secret and runs:
 
 ```sh
-python3 tests/run_tests.py --resources tests/resources --jobs 4 --timeout 300
+snip test --resources tests/resources --jobs 4 --timeout 300
 ```
 
 To test locally, decrypt the bundle into `tests/resources/` (passphrase holders only) and run the same command:
@@ -40,29 +40,29 @@ To test locally, decrypt the bundle into `tests/resources/` (passphrase holders 
 mkdir -p tests/resources
 gpg --batch --yes --pinentry-mode loopback --passphrase "$RESOURCES_PASSPHRASE" \
   -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
-python3 tests/run_tests.py --resources tests/resources --jobs 4 --timeout 300
+snip test --resources tests/resources --jobs 4 --timeout 300
 ```
 
 Rebuild the bundle after resource changes with:
 
 ```sh
-tools/build_bundle.sh <resource/shared dir> [passphrase-file]
+snip bundle <resource/shared dir> [passphrase-file]
 ```
 
-See `tools/build_bundle.sh` for rotation instructions when using a fresh passphrase.
+See `snip bundle --help` for rotation instructions when using a fresh passphrase.
 
 ## Performance Tracking (Callgrind)
 
-`tools/measure.py` measures load-independent algorithmic complexity using Valgrind Callgrind:
+`snip measure` measures load-independent algorithmic complexity using Valgrind Callgrind:
 
 - `instructions` (`Ir` — simulated instruction reads) — completely load-invariant and deterministic across runs and runners.
 - `cpu_time` (user + sys CPU time)
 - `wall_time`
 
 ```sh
-python3 tools/measure.py --resources tests/resources --repeat 1 \
+snip measure --resources tests/resources --repeat 1 \
   --output perf.json --bmf-output bencher.json
-python3 tools/measure.py --self-test
+snip measure --self-test
 ```
 
 CI runs correctness across sharded runners in the `test-shard` jobs, aggregated by `test`. Then the `perf-callgrind` job measures instruction counts under Valgrind Callgrind across 4 shards, reporting to Bencher under testbed `ubuntu-latest-ocaml` and measure `instructions` (gated by `BENCHER_API_KEY`). A fan-in `report` job merges all shard results, verifies equality against the plain BMF union (`jq -s 'add'`), and publishes a combined Markdown summary table to the GitHub Actions job summary.
