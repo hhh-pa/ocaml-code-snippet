@@ -2,7 +2,6 @@ package snipcore
 
 import (
 	"bytes"
-	"os"
 	"os/exec"
 	"time"
 )
