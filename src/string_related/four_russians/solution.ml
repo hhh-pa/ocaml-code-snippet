@@ -48,7 +48,7 @@ let () =
       match Hashtbl.find_opt memo k with
       | Some v -> v
       | None ->
-        let t0_val = 0 in
+        let _t0_val = 0 in
         let t1_val = t0 in
         let t2_val = t0 + t1 in
         let l0_val = 0 in

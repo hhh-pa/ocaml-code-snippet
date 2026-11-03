@@ -55,7 +55,6 @@ let () =
         m22 := o22
       done;
 
-      let st0 = sin (theta0 *. pi /. 180.0) in
       let ct0 = cos (theta0 *. pi /. 180.0) in
       let sts_raw = s0 /. ns in
       let sts = if sts_raw > 1.0 then 1.0 else if sts_raw < -1.0 then -1.0 else sts_raw in

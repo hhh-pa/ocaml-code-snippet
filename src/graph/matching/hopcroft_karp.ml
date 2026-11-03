@@ -46,7 +46,6 @@ let () =
 
     let rec dfs u =
       if u <> 0 then begin
-        let found = ref false in
         let rec try_edges = function
           | [] -> false
           | v :: rest ->
