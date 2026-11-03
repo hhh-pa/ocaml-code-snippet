@@ -208,7 +208,7 @@ let () =
           if !idx < Array.length tokens then (
             let w = tokens.(!idx) ^ "$" in
             incr idx;
-            let stack = ref ['$'; start_symbol] in
+            let stack = ref [start_symbol; '$'] in
             let ip = ref 0 in
             let derivations = ref [] in
             let ok = ref true in
