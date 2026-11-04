@@ -128,7 +128,7 @@ func Decrypt(bundlePath, passphrase, outDir string) error {
 func (r *Result) Report() string {
 	out := fmt.Sprintf("wrote %s (%d bytes)\n", r.Out, r.Bytes)
 	if r.Fresh {
-		out += "FRESH PASSPHRASE (set as RESOURCES_PASSPHRASE, then destroy this copy):\n" +
+		out += "FRESH PASSPHRASE (set as org secret RESOURCES_PASSPHRASE, then destroy this copy):\n" +
 			r.Passphrase + "\n"
 	}
 	return out
