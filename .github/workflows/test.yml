@@ -67,7 +67,7 @@ jobs:
         run: |
           if [ "${{ needs.test-shard.result }}" = "success" ]; then exit 0; else exit 1; fi
 
-  perf-callgrind:
+  perf-instrumentation:
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -78,7 +78,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3]
-    name: perf-callgrind (shard ${{ matrix.shard }}/4)
+    name: perf-instrumentation (shard ${{ matrix.shard }}/4)
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/profile-runner
@@ -164,8 +164,8 @@ jobs:
             perf-results.json
             bencher-bmf.json
 
-  report:
-    needs: perf-callgrind
+  report-instrumentation:
+    needs: perf-instrumentation
     runs-on: ubuntu-latest
     permissions:
       contents: read

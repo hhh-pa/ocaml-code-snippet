@@ -65,7 +65,7 @@ snip measure --resources tests/resources --repeat 1 \
 snip measure --self-test
 ```
 
-CI runs correctness across sharded runners in the `test-shard` jobs, aggregated by `test`. Then the `perf-callgrind` job measures instruction counts under Valgrind Callgrind across 4 shards, reporting to Bencher under testbed `ubuntu-latest-ocaml` and measure `instructions` (gated by `BENCHER_API_KEY`). A fan-in `report` job merges all shard results, verifies equality against the plain BMF union (`jq -s 'add'`), and publishes a combined Markdown summary table to the GitHub Actions job summary.
+CI runs correctness across sharded runners in the `test-shard` jobs, aggregated by `test`. Then the `perf-instrumentation` job measures instruction counts under Valgrind Callgrind across 4 shards, reporting to Bencher under testbed `ubuntu-latest-ocaml` and measure `instructions` (gated by `BENCHER_API_KEY`). A fan-in `report-instrumentation` job merges all shard results, verifies equality against the plain BMF union (`jq -s 'add'`), and publishes a combined Markdown summary table to the GitHub Actions job summary.
 
 ## Categories (393 snippets)
 
