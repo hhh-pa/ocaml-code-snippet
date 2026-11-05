@@ -16,10 +16,18 @@ type NumberSummary struct {
 }
 
 // ToolVersion tags the report; 2 adds the pin_instructions
-// signal plus pin_version provenance.
-const ToolVersion = 2
+// signal plus pin_version provenance; 3 adds the --repeat 0
+// pin-only mode and the allocated_bytes signal. Measure links an
+// allocation-reporter module into its binaries from v3 on, which
+// shifts Pin counts by a small deterministic constant: compare
+// pin_instructions within one tool version only.
+const ToolVersion = 3
 
 // CaseSummary holds per-case aggregate measurements across repeats.
+// Pin-only results (--repeat 0) carry Runs 0 with just the
+// instrument signals (PinInstructions, AllocatedBytes): no timed
+// phase ran, so the time/memory summaries stay nil instead of
+// reporting zeros.
 type CaseSummary struct {
 	Instructions    *NumberSummary `json:"instructions"`
 	WallS           *NumberSummary `json:"wall_s"`
@@ -27,6 +35,7 @@ type CaseSummary struct {
 	MaxRSSKb        *NumberSummary `json:"maxrss_kb"`
 	Runs            int            `json:"runs"`
 	PinInstructions *NumberSummary `json:"pin_instructions,omitempty"`
+	AllocatedBytes  *NumberSummary `json:"allocated_bytes,omitempty"`
 }
 
 // CaseResult is one measured test case. PinSkipped records a

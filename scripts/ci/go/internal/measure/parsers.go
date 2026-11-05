@@ -35,6 +35,32 @@ func ParseCallgrindOutput(content string) (int64, error) {
 	return 0, fmt.Errorf("no callgrind totals/summary found")
 }
 
+// AllocMarker prefixes the allocation line the snip_gc_report
+// module prints to stderr at program exit.
+const AllocMarker = "SNIP_ALLOCATED_BYTES="
+
+// ParseAllocBytes reads total allocated bytes from a snippet run's
+// stderr. It reports found=false when the marker is absent (the
+// binary was built without the reporter: `snip test` binaries, the
+// ocaml-interpreter fallback, or a reporter-less checkout), so
+// callers record no allocated_bytes rather than zero. Later valid
+// markers win; malformed marker lines are skipped, never fatal:
+// stderr is shared with arbitrary snippet output.
+func ParseAllocBytes(stderr string) (bytes int64, found bool) {
+	for _, line := range strings.Split(stderr, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, AllocMarker) {
+			continue
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(trimmed[len(AllocMarker):]), 10, 64)
+		if err != nil || n < 0 {
+			continue
+		}
+		bytes, found = n, true
+	}
+	return bytes, found
+}
+
 // ParsePinCount reads the total from an inscount-style tool
 // output file (one "Count N" line). Later Count lines win so
 // per-thread dumps still resolve to their trailing total.

@@ -27,14 +27,17 @@ func AppendSummary(path string, report *Report, bmf BMF) error {
 	var lines []string
 	lines = append(lines, "### Performance Summary (OCaml)")
 	lines = append(lines, "")
-	lines = append(lines, "| Benchmark | Cases | Instructions (Ir) | Pin Instructions | CPU Time (s) |")
-	lines = append(lines, "| :--- | :---: | :---: | :---: | :---: |")
+	lines = append(lines, "| Benchmark | Cases | Instructions (Ir) | Pin Instructions | Allocated Bytes | CPU Time (s) |")
+	lines = append(lines, "| :--- | :---: | :---: | :---: | :---: | :---: |")
 
 	var totalInsn int64
 	var totalPin int64
+	var totalAlloc int64
 	var totalCpu float64
 	hasInsn := false
 	hasPin := false
+	hasAlloc := false
+	hasCpu := false
 
 	for _, name := range names {
 		casesCount := len(snippets[name])
@@ -53,12 +56,21 @@ func AppendSummary(path string, report *Report, bmf BMF) error {
 			totalPin += val
 			hasPin = true
 		}
-		var cpuVal float64
-		if ok && m.CpuTime != nil {
-			cpuVal, _ = toFloat64(m.CpuTime.Value)
-			totalCpu += cpuVal
+		allocStr := "-"
+		if ok && m.AllocatedBytes != nil {
+			val, _ := toInt64(m.AllocatedBytes.Value)
+			allocStr = fmtInt(val)
+			totalAlloc += val
+			hasAlloc = true
 		}
-		lines = append(lines, fmt.Sprintf("| `%s` | %d | %s | %s | %.4f |", name, casesCount, insnStr, pinStr, cpuVal))
+		cpuStr := "-"
+		if ok && m.CpuTime != nil {
+			cpuVal, _ := toFloat64(m.CpuTime.Value)
+			cpuStr = fmt.Sprintf("%.4f", cpuVal)
+			totalCpu += cpuVal
+			hasCpu = true
+		}
+		lines = append(lines, fmt.Sprintf("| `%s` | %d | %s | %s | %s | %s |", name, casesCount, insnStr, pinStr, allocStr, cpuStr))
 	}
 
 	totInsnStr := "-"
@@ -69,7 +81,15 @@ func AppendSummary(path string, report *Report, bmf BMF) error {
 	if hasPin {
 		totPinStr = fmtInt(totalPin)
 	}
-	lines = append(lines, fmt.Sprintf("| **Total (%d snippets)** | - | **%s** | **%s** | **%.4f** |", len(names), totInsnStr, totPinStr, totalCpu))
+	totAllocStr := "-"
+	if hasAlloc {
+		totAllocStr = fmtInt(totalAlloc)
+	}
+	totCpuStr := "-"
+	if hasCpu {
+		totCpuStr = fmt.Sprintf("%.4f", totalCpu)
+	}
+	lines = append(lines, fmt.Sprintf("| **Total (%d snippets)** | - | **%s** | **%s** | **%s** | **%s** |", len(names), totInsnStr, totPinStr, totAllocStr, totCpuStr))
 	lines = append(lines, "")
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)

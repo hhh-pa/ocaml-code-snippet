@@ -57,14 +57,16 @@ func IsPinTimeout(runErr string) bool {
 }
 
 // PinOnce runs inner once under Intel Pin with the inscount tool
-// and returns stdout plus the total instruction count. The OCaml
-// harness has no JVM leg (native ocamlopt binaries, or the ocaml
-// interpreter fallback), so this is the plain native recipe with
-// no JVM signal flags.
-func PinOnce(pinBin, tool string, inner []string, input []byte, timeout int) ([]byte, int64, string) {
+// and returns stdout, the total instruction count, and the total
+// allocated bytes parsed from the run's stderr (nil when the
+// binary carries no allocation reporter). The OCaml harness has no
+// JVM leg (native ocamlopt binaries, or the ocaml interpreter
+// fallback), so this is the plain native recipe with no JVM
+// signal flags.
+func PinOnce(pinBin, tool string, inner []string, input []byte, timeout int) (stdout []byte, count int64, alloc *int64, runErr string) {
 	outFile, err := tempPinFile()
 	if err != nil {
-		return nil, 0, "pin output unreadable: " + err.Error()
+		return nil, 0, nil, "pin output unreadable: " + err.Error()
 	}
 	defer os.Remove(outFile)
 	cmd := []string{pinBin, "-t", tool, "-o", outFile, "--"}
@@ -72,25 +74,28 @@ func PinOnce(pinBin, tool string, inner []string, input []byte, timeout int) ([]
 	stdout, stderr, err := snipcore.Run(cmd, input, timeout)
 	var timeoutErr *snipcore.TimeoutError
 	if errors.As(err, &timeoutErr) {
-		return nil, 0, fmt.Sprintf("TIMEOUT (>%ds)", timeout)
+		return nil, 0, nil, fmt.Sprintf("TIMEOUT (>%ds)", timeout)
 	}
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			tail := string(bytes.TrimSpace(stderr))
-			return nil, 0, fmt.Sprintf("exit %d: %s", exitErr.ExitCode(), tail)
+			return nil, 0, nil, fmt.Sprintf("exit %d: %s", exitErr.ExitCode(), tail)
 		}
-		return nil, 0, fmt.Sprintf("execution error: %v (%s)", err, string(stderr))
+		return nil, 0, nil, fmt.Sprintf("execution error: %v (%s)", err, string(stderr))
 	}
 	raw, err := os.ReadFile(outFile)
 	if err != nil {
-		return nil, 0, "pin output unreadable: " + err.Error()
+		return nil, 0, nil, "pin output unreadable: " + err.Error()
 	}
-	count, err := ParsePinCount(string(raw))
+	count, err = ParsePinCount(string(raw))
 	if err != nil {
-		return nil, 0, err.Error()
+		return nil, 0, nil, err.Error()
 	}
-	return stdout, count, ""
+	if n, found := ParseAllocBytes(string(stderr)); found {
+		alloc = &n
+	}
+	return stdout, count, alloc, ""
 }
 
 func tempPinFile() (string, error) {
@@ -104,11 +109,14 @@ func tempPinFile() (string, error) {
 }
 
 // MeasureCasePin runs the Pin inscount phase for one case: pinRepeat
-// counts of execCmd under Pin. It returns the count summary, or a
-// skip reason when the case exceeded the Pin budget (callgrind data
-// stays valid), or an error when the case crashes or mismatches
-// under Pin.
-func MeasureCasePin(label, caseName string, execCmd []string, inputPath, outputPath string, pinBin, pinTool string, pinRepeat, pinTimeout int) (*NumberSummary, *string, error) {
+// counts of execCmd under Pin. Each run yields both the
+// instruction count and the allocated bytes, returned as a summary
+// holding just those two instrument signals. It returns a skip
+// reason when the case exceeded the Pin budget (other data stays
+// valid), or an error when the case crashes or mismatches under
+// Pin. The first Pin run gates correctness, so pin-only sweeps
+// (--repeat 0) still verify output.
+func MeasureCasePin(label, caseName string, execCmd []string, inputPath, outputPath string, pinBin, pinTool string, pinRepeat, pinTimeout int) (*CaseSummary, *string, error) {
 	expectedBytes, err := os.ReadFile(outputPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read output file: %w", err)
@@ -121,8 +129,9 @@ func MeasureCasePin(label, caseName string, execCmd []string, inputPath, outputP
 	}
 
 	var counts []float64
+	var allocs []float64
 	for i := 0; i < pinRepeat; i++ {
-		stdout, count, runErr := PinOnce(pinBin, pinTool, execCmd, inputBytes, pinTimeout)
+		stdout, count, alloc, runErr := PinOnce(pinBin, pinTool, execCmd, inputBytes, pinTimeout)
 		if runErr != "" {
 			if IsPinTimeout(runErr) {
 				skip := runErr
@@ -144,6 +153,13 @@ func MeasureCasePin(label, caseName string, execCmd []string, inputPath, outputP
 			return nil, nil, fmt.Errorf("pin output mismatch: expected %q got %q", want, got)
 		}
 		counts = append(counts, float64(count))
+		if alloc != nil {
+			allocs = append(allocs, float64(*alloc))
+		}
 	}
-	return SummarizeNumbers(counts), nil, nil
+	summary := &CaseSummary{PinInstructions: SummarizeNumbers(counts)}
+	if len(allocs) == pinRepeat {
+		summary.AllocatedBytes = SummarizeNumbers(allocs)
+	}
+	return summary, nil, nil
 }

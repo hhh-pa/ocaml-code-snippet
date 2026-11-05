@@ -8,10 +8,13 @@ type MeasureValue struct {
 // Benchmark measures for one snippet. Instructions is the Callgrind Ir
 // total (local runs with valgrind installed; CI no longer
 // installs valgrind); PinInstructions is the Pin inscount total
-// CI tracks.
+// CI tracks; AllocatedBytes is the Gc.allocated_bytes total from
+// the same Pin runs. CpuTime is omitted when no timed phase ran
+// (pin-only sweeps), so BMF never carries zero cpu_time rows.
 type Benchmark struct {
 	Instructions    *MeasureValue `json:"instructions,omitempty"`
 	PinInstructions *MeasureValue `json:"pin_instructions,omitempty"`
+	AllocatedBytes  *MeasureValue `json:"allocated_bytes,omitempty"`
 	CpuTime         *MeasureValue `json:"cpu_time,omitempty"`
 }
 
@@ -31,7 +34,10 @@ func BuildBMF(results []CaseResult) BMF {
 		hasInstructions := false
 		var totalPin int64
 		hasPin := false
+		var totalAlloc int64
+		allocCases := 0
 		var totalCpu float64
+		hasCpu := false
 
 		for _, it := range items {
 			s := it.Summary
@@ -46,19 +52,28 @@ func BuildBMF(results []CaseResult) BMF {
 				totalPin += int64(s.PinInstructions.Median)
 				hasPin = true
 			}
+			if s.AllocatedBytes != nil {
+				totalAlloc += int64(s.AllocatedBytes.Median)
+				allocCases++
+			}
 			if s.CpuS != nil {
 				totalCpu += s.CpuS.Median
+				hasCpu = true
 			}
 		}
 
-		bench := Benchmark{
-			CpuTime: &MeasureValue{Value: totalCpu},
-		}
+		bench := Benchmark{}
 		if hasInstructions {
 			bench.Instructions = &MeasureValue{Value: totalInstructions}
 		}
 		if hasPin {
 			bench.PinInstructions = &MeasureValue{Value: totalPin}
+		}
+		if allocCases == len(items) && len(items) > 0 {
+			bench.AllocatedBytes = &MeasureValue{Value: totalAlloc}
+		}
+		if hasCpu {
+			bench.CpuTime = &MeasureValue{Value: totalCpu}
 		}
 		bmf[label] = bench
 	}

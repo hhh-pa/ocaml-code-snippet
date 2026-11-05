@@ -116,10 +116,10 @@ jobs:
       - name: Provision Intel Pin 4.4 and build inscount tool
         run: scripts/ci/setup-instrumentation.sh
 
-      - name: Measure performance (Pin instructions)
+      - name: Measure performance (Pin-only: instructions + allocated bytes)
         run: |
           "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
-            --repeat 1 --jobs 2 --timeout 300 \
+            --repeat 0 --jobs 2 --timeout 300 \
             --shard ${{ matrix.shard }}/4 \
             --pin --pin-bin "$INSTRUMENTATION_BIN" --pin-tool "$INSTRUMENTATION_TOOL" \
             --output perf-results.json --bmf-output bencher-bmf.json \
