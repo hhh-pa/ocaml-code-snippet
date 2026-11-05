@@ -51,21 +51,25 @@ snip bundle <resource/shared dir> [passphrase-file]
 
 See `snip bundle --help` for rotation instructions when using a fresh passphrase.
 
-## Performance Tracking (Callgrind)
+## Performance Tracking (Pin)
 
-`snip measure` measures load-independent algorithmic complexity using Valgrind Callgrind:
+`snip measure --pin` measures load-independent algorithmic complexity using Intel Pin 4.4 with a vendored inscount tool (`scripts/ci/instrumentation/`):
 
-- `instructions` (`Ir` — simulated instruction reads) — completely load-invariant and deterministic across runs and runners.
+- `pin_instructions` (executed application instructions) — completely load-invariant and deterministic across runs and runners sharing one Pin version.
 - `cpu_time` (user + sys CPU time)
 - `wall_time`
 
 ```sh
+scripts/ci/setup-instrumentation.sh  # one-time Pin 4.4 kit + tool provisioning
 snip measure --resources tests/resources --repeat 1 \
+  --pin --pin-bin "$INSTRUMENTATION_BIN" --pin-tool "$INSTRUMENTATION_TOOL" \
   --output perf.json --bmf-output bencher.json
 snip measure --self-test
 ```
 
-CI runs correctness across sharded runners in the `test-shard` jobs, aggregated by `test`. Then the `perf-instrumentation` job measures instruction counts under Valgrind Callgrind across 4 shards, reporting to Bencher under testbed `ubuntu-latest-ocaml` and measure `instructions` (gated by `BENCHER_API_KEY`). A fan-in `report-instrumentation` job merges all shard results, verifies equality against the plain BMF union (`jq -s 'add'`), and publishes a combined Markdown summary table to the GitHub Actions job summary.
+CI runs correctness across sharded runners in the `test-shard` jobs, aggregated by `test`. Then the `perf-instrumentation` job provisions Pin 4.4 (kit + built tool cached across runs) and measures instruction counts across 4 shards, reporting to Bencher under testbed `ubuntu-latest-ocaml` and measure `pin_instructions` (gated by `BENCHER_API_KEY`). A fan-in `report-instrumentation` job merges all shard results, verifies equality against the plain BMF union (`jq -s 'add'`), and publishes a combined Markdown summary table to the GitHub Actions job summary.
+
+Note: the old Callgrind `instructions` (`Ir`) measure ends with the Pin switch — Pin counts and Callgrind Ir are different signals on different scales, so Bencher history restarts under `pin_instructions` by design. The Callgrind code path stays in the harness for local runs with valgrind installed.
 
 ## Categories (393 snippets)
 

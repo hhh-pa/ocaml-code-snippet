@@ -5,10 +5,14 @@ type MeasureValue struct {
 	Value any `json:"value"`
 }
 
-// Benchmark measures for one snippet.
+// Benchmark measures for one snippet. Instructions is the Callgrind Ir
+// total (local runs with valgrind installed; CI no longer
+// installs valgrind); PinInstructions is the Pin inscount total
+// CI tracks.
 type Benchmark struct {
-	Instructions *MeasureValue `json:"instructions,omitempty"`
-	CpuTime      *MeasureValue `json:"cpu_time,omitempty"`
+	Instructions    *MeasureValue `json:"instructions,omitempty"`
+	PinInstructions *MeasureValue `json:"pin_instructions,omitempty"`
+	CpuTime         *MeasureValue `json:"cpu_time,omitempty"`
 }
 
 // BMF maps snippet benchmark label to measures.
@@ -25,6 +29,8 @@ func BuildBMF(results []CaseResult) BMF {
 	for label, items := range snippets {
 		var totalInstructions int64
 		hasInstructions := false
+		var totalPin int64
+		hasPin := false
 		var totalCpu float64
 
 		for _, it := range items {
@@ -36,6 +42,10 @@ func BuildBMF(results []CaseResult) BMF {
 				totalInstructions += int64(s.Instructions.Median)
 				hasInstructions = true
 			}
+			if s.PinInstructions != nil {
+				totalPin += int64(s.PinInstructions.Median)
+				hasPin = true
+			}
 			if s.CpuS != nil {
 				totalCpu += s.CpuS.Median
 			}
@@ -46,6 +56,9 @@ func BuildBMF(results []CaseResult) BMF {
 		}
 		if hasInstructions {
 			bench.Instructions = &MeasureValue{Value: totalInstructions}
+		}
+		if hasPin {
+			bench.PinInstructions = &MeasureValue{Value: totalPin}
 		}
 		bmf[label] = bench
 	}

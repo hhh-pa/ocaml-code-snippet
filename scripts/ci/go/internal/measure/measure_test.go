@@ -81,4 +81,39 @@ func TestBuildBMF(t *testing.T) {
 	if bench.CpuTime == nil || math.Abs(bench.CpuTime.Value.(float64)-0.05) > 1e-6 {
 		t.Fatalf("cpu_time = %v, want 0.05", bench.CpuTime)
 	}
+	if bench.PinInstructions != nil {
+		t.Fatalf("pin_instructions = %v, want omitted when no Pin data", bench.PinInstructions)
+	}
+}
+
+func TestBuildBMFPin(t *testing.T) {
+	results := []CaseResult{
+		{
+			Label: "sort/bubble_sort",
+			Case:  "tc0",
+			Summary: &CaseSummary{
+				PinInstructions: &NumberSummary{Median: 5000},
+				CpuS:            &NumberSummary{Median: 0.02},
+			},
+		},
+		{
+			Label: "sort/bubble_sort",
+			Case:  "tc1",
+			Summary: &CaseSummary{
+				PinInstructions: &NumberSummary{Median: 7000},
+				CpuS:            &NumberSummary{Median: 0.03},
+			},
+		},
+	}
+	bmf := BuildBMF(results)
+	bench, ok := bmf["sort/bubble_sort"]
+	if !ok {
+		t.Fatalf("missing sort/bubble_sort in BMF")
+	}
+	if bench.PinInstructions == nil || bench.PinInstructions.Value.(int64) != 12000 {
+		t.Fatalf("pin_instructions = %v, want 12000", bench.PinInstructions)
+	}
+	if bench.Instructions != nil {
+		t.Fatalf("instructions = %v, want omitted when no Callgrind data", bench.Instructions)
+	}
 }

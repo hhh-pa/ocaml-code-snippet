@@ -468,16 +468,18 @@ totals: 987654321
 			Label: "sort/merge_sort",
 			Case:  "tc0",
 			Summary: &measure.CaseSummary{
-				Instructions: &measure.NumberSummary{Median: 1000},
-				CpuS:         &measure.NumberSummary{Median: 0.05},
+				Instructions:    &measure.NumberSummary{Median: 1000},
+				PinInstructions: &measure.NumberSummary{Median: 5000},
+				CpuS:            &measure.NumberSummary{Median: 0.05},
 			},
 		},
 		{
 			Label: "sort/merge_sort",
 			Case:  "tc1",
 			Summary: &measure.CaseSummary{
-				Instructions: &measure.NumberSummary{Median: 2000},
-				CpuS:         &measure.NumberSummary{Median: 0.05},
+				Instructions:    &measure.NumberSummary{Median: 2000},
+				PinInstructions: &measure.NumberSummary{Median: 7000},
+				CpuS:            &measure.NumberSummary{Median: 0.05},
 			},
 		},
 	}
@@ -485,6 +487,10 @@ totals: 987654321
 	m := bmf["sort/merge_sort"]
 	if m.Instructions == nil || m.Instructions.Value.(int64) != 3000 {
 		fmt.Fprintf(os.Stderr, "BMF instructions: expected 3000, got %v\n", m.Instructions)
+		return 1
+	}
+	if m.PinInstructions == nil || m.PinInstructions.Value.(int64) != 12000 {
+		fmt.Fprintf(os.Stderr, "BMF pin_instructions: expected 12000, got %v\n", m.PinInstructions)
 		return 1
 	}
 	if m.CpuTime == nil || math.Abs(m.CpuTime.Value.(float64)-0.10) > 1e-6 {

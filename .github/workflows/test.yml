@@ -88,10 +88,10 @@ jobs:
         with:
           cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/**') }}
 
-      - name: Install OCaml and Valgrind
+      - name: Install OCaml
         uses: awalsh128/cache-apt-pkgs-action@v1.6.3
         with:
-          packages: ocaml ocaml-native-compilers valgrind
+          packages: ocaml ocaml-native-compilers
           version: 1.0
 
       - name: Decrypt and extract resources
@@ -107,11 +107,21 @@ jobs:
             --passphrase "$RESOURCES_PASSPHRASE" \
             -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
 
-      - name: Measure performance (Callgrind instructions)
+      - name: Restore Pin kit and inscount tool
+        uses: actions/cache@v5
+        with:
+          path: ~/instrumentation
+          key: pin-4.4-${{ runner.os }}-${{ hashFiles('scripts/ci/setup-instrumentation.sh', 'scripts/ci/instrumentation/**') }}
+
+      - name: Provision Intel Pin 4.4 and build inscount tool
+        run: scripts/ci/setup-instrumentation.sh
+
+      - name: Measure performance (Pin instructions)
         run: |
           "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
             --repeat 1 --jobs 2 --timeout 300 \
             --shard ${{ matrix.shard }}/4 \
+            --pin --pin-bin "$INSTRUMENTATION_BIN" --pin-tool "$INSTRUMENTATION_TOOL" \
             --output perf-results.json --bmf-output bencher-bmf.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
@@ -145,7 +155,7 @@ jobs:
               --key '${{ secrets.BENCHER_API_KEY }}' \
               --branch "${{ github.ref_name }}" \
               --testbed ubuntu-latest-ocaml \
-              --threshold-measure instructions \
+              --threshold-measure pin_instructions \
               --threshold-test percentage \
               --threshold-min-sample-size 10 \
               --threshold-max-sample-size 64 \

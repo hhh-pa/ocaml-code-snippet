@@ -25,14 +25,16 @@ func AppendSummary(path string, report *Report, bmf BMF) error {
 	sort.Strings(names)
 
 	var lines []string
-	lines = append(lines, "### Callgrind Performance Summary (OCaml)")
+	lines = append(lines, "### Performance Summary (OCaml)")
 	lines = append(lines, "")
-	lines = append(lines, "| Benchmark | Cases | Instructions (Ir) | CPU Time (s) |")
-	lines = append(lines, "| :--- | :---: | :---: | :---: |")
+	lines = append(lines, "| Benchmark | Cases | Instructions (Ir) | Pin Instructions | CPU Time (s) |")
+	lines = append(lines, "| :--- | :---: | :---: | :---: | :---: |")
 
 	var totalInsn int64
+	var totalPin int64
 	var totalCpu float64
 	hasInsn := false
+	hasPin := false
 
 	for _, name := range names {
 		casesCount := len(snippets[name])
@@ -44,19 +46,30 @@ func AppendSummary(path string, report *Report, bmf BMF) error {
 			totalInsn += val
 			hasInsn = true
 		}
+		pinStr := "-"
+		if ok && m.PinInstructions != nil {
+			val, _ := toInt64(m.PinInstructions.Value)
+			pinStr = fmtInt(val)
+			totalPin += val
+			hasPin = true
+		}
 		var cpuVal float64
 		if ok && m.CpuTime != nil {
 			cpuVal, _ = toFloat64(m.CpuTime.Value)
 			totalCpu += cpuVal
 		}
-		lines = append(lines, fmt.Sprintf("| `%s` | %d | %s | %.4f |", name, casesCount, insnStr, cpuVal))
+		lines = append(lines, fmt.Sprintf("| `%s` | %d | %s | %s | %.4f |", name, casesCount, insnStr, pinStr, cpuVal))
 	}
 
 	totInsnStr := "-"
 	if hasInsn {
 		totInsnStr = fmtInt(totalInsn)
 	}
-	lines = append(lines, fmt.Sprintf("| **Total (%d snippets)** | - | **%s** | **%.4f** |", len(names), totInsnStr, totalCpu))
+	totPinStr := "-"
+	if hasPin {
+		totPinStr = fmtInt(totalPin)
+	}
+	lines = append(lines, fmt.Sprintf("| **Total (%d snippets)** | - | **%s** | **%s** | **%.4f** |", len(names), totInsnStr, totPinStr, totalCpu))
 	lines = append(lines, "")
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
