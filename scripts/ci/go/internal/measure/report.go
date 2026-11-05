@@ -15,22 +15,30 @@ type NumberSummary struct {
 	Max    float64 `json:"max"`
 }
 
+// ToolVersion tags the report; 2 adds the pin_instructions
+// signal plus pin_version provenance.
+const ToolVersion = 2
+
 // CaseSummary holds per-case aggregate measurements across repeats.
 type CaseSummary struct {
-	Instructions *NumberSummary `json:"instructions"`
-	WallS        *NumberSummary `json:"wall_s"`
-	CpuS         *NumberSummary `json:"cpu_s"`
-	MaxRSSKb     *NumberSummary `json:"maxrss_kb"`
-	Runs         int            `json:"runs"`
+	Instructions    *NumberSummary `json:"instructions"`
+	WallS           *NumberSummary `json:"wall_s"`
+	CpuS            *NumberSummary `json:"cpu_s"`
+	MaxRSSKb        *NumberSummary `json:"maxrss_kb"`
+	Runs            int            `json:"runs"`
+	PinInstructions *NumberSummary `json:"pin_instructions,omitempty"`
 }
 
-// CaseResult is one measured test case.
+// CaseResult is one measured test case. PinSkipped records a
+// degraded Pin phase: the timed data is valid but the case
+// exceeded the Pin budget, so no pin summary was recorded.
 type CaseResult struct {
-	Label   string       `json:"label"`
-	Stem    string       `json:"stem"`
-	Case    string       `json:"case"`
-	Script  string       `json:"script"`
-	Summary *CaseSummary `json:"summary"`
+	Label      string       `json:"label"`
+	Stem       string       `json:"stem"`
+	Case       string       `json:"case"`
+	Script     string       `json:"script"`
+	Summary    *CaseSummary `json:"summary"`
+	PinSkipped *string      `json:"pin_skipped,omitempty"`
 }
 
 // Report is the full JSON output of snip measure.
@@ -39,6 +47,8 @@ type Report struct {
 	Platform    string       `json:"platform"`
 	Date        string       `json:"date"`
 	HasValgrind bool         `json:"has_valgrind"`
+	PinUsed     bool         `json:"pin_used"`
+	PinVersion  *string      `json:"pin_version"`
 	Results     []CaseResult `json:"results"`
 	Failures    []string     `json:"failures"`
 }
@@ -70,6 +80,9 @@ func MergeReports(paths []string) (*Report, BMF, error) {
 	var mergedResults []CaseResult
 	var failures []string
 	seen := map[string]bool{}
+	var pinUsed bool
+	var pinVersion *string
+	haveBase := false
 
 	sortedPaths := make([]string, len(paths))
 	copy(sortedPaths, paths)
@@ -83,6 +96,10 @@ func MergeReports(paths []string) (*Report, BMF, error) {
 		var rep Report
 		if err := json.Unmarshal(data, &rep); err != nil {
 			return nil, nil, err
+		}
+		if !haveBase {
+			pinUsed, pinVersion = rep.PinUsed, rep.PinVersion
+			haveBase = true
 		}
 		for _, item := range rep.Results {
 			key := item.Label + "/" + item.Case
@@ -102,10 +119,12 @@ func MergeReports(paths []string) (*Report, BMF, error) {
 	})
 
 	rep := &Report{
-		ToolVersion: 1,
+		ToolVersion: ToolVersion,
 		Platform:    runtime.GOOS + "/" + runtime.GOARCH,
 		Date:        time.Now().UTC().Format(time.RFC3339),
 		HasValgrind: true,
+		PinUsed:     pinUsed,
+		PinVersion:  pinVersion,
 		Results:     mergedResults,
 		Failures:    failures,
 	}

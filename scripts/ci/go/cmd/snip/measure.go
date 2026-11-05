@@ -18,16 +18,19 @@ import (
 	"github.com/hhh-pa/ocaml-code-snippet/scripts/ci/go/internal/snipcore"
 )
 
-const measureUsage = `Load-independent Callgrind performance measurement for OCaml snippets.
+const measureUsage = `Load-independent performance measurement for OCaml snippets.
 
 Compiles every src/**/*.ml script to a native binary using ocamlopt -O2,
 runs it against the shared test cases under Valgrind Callgrind, and records
-simulated instruction reads (Ir) and execution times.
+simulated instruction reads (Ir) and execution times, plus (under the new
+flags) Pin instruction counts from an inscount tool run.
 
 Usage:
   snip measure [--resources DIR] [--repeat N] [--jobs N] [--timeout S]
                [--only SUBSTR] [--shard K/N] [--output JSON]
                [--bmf-output JSON] [--summary-file MD]
+               [--pin] [--pin-bin BIN] [--pin-tool SO] [--pin-repeat N]
+               [--pin-timeout S]
 
   snip measure --merge shard-*.json [--output JSON] [--bmf-output JSON]
                [--summary-file MD]
@@ -50,8 +53,10 @@ func runMeasure(argv []string) int {
 	jobs := 2
 	repeat := 1
 	timeout := 300
-	var only, shard, output, bmfOutput, summaryFile, mergeFilesStr string
-	var selfTest bool
+	pinRepeat := measure.PinRepeatDefault
+	pinTimeout := 600
+	var only, shard, output, bmfOutput, summaryFile, mergeFilesStr, pinBin, pinTool string
+	var selfTest, pin bool
 
 	// Parse flags manually or with flagSpec; note that --merge can take multiple files.
 	// We extract --merge and --self-test first if present.
@@ -83,14 +88,19 @@ func runMeasure(argv []string) int {
 			"bmf-output":   &bmfOutput,
 			"summary-file": &summaryFile,
 			"merge":        &mergeFilesStr,
+			"pin-bin":      &pinBin,
+			"pin-tool":     &pinTool,
 		},
 		Ints: map[string]*int{
-			"jobs":    &jobs,
-			"repeat":  &repeat,
-			"timeout": &timeout,
+			"jobs":        &jobs,
+			"repeat":      &repeat,
+			"timeout":     &timeout,
+			"pin-repeat":  &pinRepeat,
+			"pin-timeout": &pinTimeout,
 		},
 		Bools: map[string]*bool{
 			"self-test": &selfTest,
+			"pin":       &pin,
 		},
 	})
 	if err != nil {
@@ -99,6 +109,15 @@ func runMeasure(argv []string) int {
 			return 0
 		}
 		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	if pinRepeat < 1 {
+		fmt.Fprintln(os.Stderr, "snip measure: --pin-repeat must be >= 1")
+		return 2
+	}
+	if pinTimeout < 1 {
+		fmt.Fprintln(os.Stderr, "snip measure: --pin-timeout must be >= 1")
 		return 2
 	}
 
@@ -142,6 +161,19 @@ func runMeasure(argv []string) int {
 	hasValgrind := valgrindErr == nil
 	if !hasValgrind {
 		fmt.Fprintln(os.Stderr, "warning: valgrind not found in PATH; running binary directly without Callgrind simulation")
+	}
+
+	usePin := pin && measure.PinUsable(pinBin, pinTool)
+	if pin && !usePin {
+		fmt.Fprintln(os.Stderr, "warning: pin unavailable (need --pin-bin launcher and --pin-tool inscount .so); pin_instructions will be null")
+	}
+	var pinVersion *string
+	if usePin {
+		pinVersion = measure.PinVersion(pinBin)
+	}
+	effectivePin := 0
+	if usePin {
+		effectivePin = pinRepeat
 	}
 
 	_, ocamloptErr := exec.LookPath("ocamlopt")
@@ -309,6 +341,16 @@ func runMeasure(argv []string) int {
 			defer func() { <-sem }()
 
 			summary, measErr := measure.MeasureCaseCallgrind(hasValgrind, runCmd, tk.inp, tk.outp, repeat, timeout)
+			var pinSkipped *string
+			if measErr == nil && effectivePin > 0 {
+				var pinSummary *measure.NumberSummary
+				pinSummary, pinSkipped, measErr = measure.MeasureCasePin(
+					tk.label, tk.caseName, runCmd, tk.inp, tk.outp,
+					pinBin, pinTool, effectivePin, pinTimeout)
+				if measErr == nil && pinSummary != nil {
+					summary.PinInstructions = pinSummary
+				}
+			}
 
 			mu.Lock()
 			done++
@@ -317,14 +359,21 @@ func runMeasure(argv []string) int {
 				if summary.Instructions != nil {
 					insnStr = fmt.Sprintf("%s Ir", formatInt(int64(summary.Instructions.Median)))
 				}
-				fmt.Printf("[%d/%d] %s/%s: %s\n", done, totalTasks, tk.label, tk.caseName, insnStr)
+				pinInfo := ""
+				if summary.PinInstructions != nil {
+					pinInfo = fmt.Sprintf("; %s Pin", formatInt(int64(summary.PinInstructions.Median)))
+				} else if pinSkipped != nil {
+					pinInfo = fmt.Sprintf(" (pin skipped: %s)", *pinSkipped)
+				}
+				fmt.Printf("[%d/%d] %s/%s: %s%s\n", done, totalTasks, tk.label, tk.caseName, insnStr, pinInfo)
 				relScript, _ := filepath.Rel(root, tk.script)
 				results = append(results, measure.CaseResult{
-					Label:   tk.label,
-					Stem:    tk.stem,
-					Case:    tk.caseName,
-					Script:  filepath.ToSlash(relScript),
-					Summary: summary,
+					Label:      tk.label,
+					Stem:       tk.stem,
+					Case:       tk.caseName,
+					Script:     filepath.ToSlash(relScript),
+					Summary:    summary,
+					PinSkipped: pinSkipped,
 				})
 			} else {
 				fmt.Printf("[%d/%d] FAIL %s/%s: %v\n", done, totalTasks, tk.label, tk.caseName, measErr)
@@ -343,10 +392,12 @@ func runMeasure(argv []string) int {
 	})
 
 	rep := &measure.Report{
-		ToolVersion: 1,
+		ToolVersion: measure.ToolVersion,
 		Platform:    runtime.GOOS + "/" + runtime.GOARCH,
 		Date:        time.Now().UTC().Format(time.RFC3339),
 		HasValgrind: hasValgrind,
+		PinUsed:     usePin,
+		PinVersion:  pinVersion,
 		Results:     results,
 		Failures:    failures,
 	}
@@ -395,6 +446,21 @@ totals: 987654321
 	if err != nil || parsed != 987654321 {
 		fmt.Fprintf(os.Stderr, "ParseCallgrindOutput: expected 987654321, got %d, err: %v\n", parsed, err)
 		return 1
+	}
+
+	if n, err := measure.ParsePinCount("Count 846018869\n"); err != nil || n != 846018869 {
+		fmt.Fprintf(os.Stderr, "ParsePinCount: expected 846018869, got %d, err: %v\n", n, err)
+		return 1
+	}
+	if n, err := measure.ParsePinCount("Pin 3.31\nCount 1\nCount 42\n"); err != nil || n != 42 {
+		fmt.Fprintf(os.Stderr, "ParsePinCount: later Count must win, got %d, err: %v\n", n, err)
+		return 1
+	}
+	for _, bad := range []string{"", "no counts here\n", "Count abc\n", "Count\n", "Count 1 2\n"} {
+		if n, err := measure.ParsePinCount(bad); err == nil {
+			fmt.Fprintf(os.Stderr, "ParsePinCount: must reject %q, got %d\n", bad, n)
+			return 1
+		}
 	}
 
 	mockResults := []measure.CaseResult{
