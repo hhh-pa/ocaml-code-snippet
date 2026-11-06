@@ -351,6 +351,22 @@ func runMeasure(argv []string) int {
 	compileFailures := map[string]string{}
 
 	if hasOcamlopt {
+		// Precompile the allocation reporter ONCE before the parallel
+		// loop: every measure binary links it, and compiling the
+		// shared reporter source in parallel corrupts its derived
+		// files (concurrent ocamlopt runs race on
+		// scripts/ci/measure/snip_gc_report.cmx, failing snippets
+		// with "Corrupted compilation unit description"). The loop
+		// below then links the prebuilt .cmx read-only.
+		var reporterCmx string
+		if linkReporter {
+			var err error
+			reporterCmx, err = precompileReporter(buildBase, reporter)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "snip measure: %v\n", err)
+				return 1
+			}
+		}
 		fmt.Printf("Compiling %d snippets with ocamlopt -O2...\n", len(neededScripts))
 		sem := make(chan struct{}, jobs)
 		var wg sync.WaitGroup
@@ -382,8 +398,7 @@ func runMeasure(argv []string) int {
 				absScript, _ := filepath.Abs(script)
 				cmd := []string{"ocamlopt", "-O2", "-o", absBin, absScript}
 				if linkReporter {
-					absReporter, _ := filepath.Abs(reporter)
-					cmd = []string{"ocamlopt", "-O2", "-o", absBin, absReporter, absScript}
+					cmd = []string{"ocamlopt", "-O2", "-o", absBin, reporterCmx, absScript}
 				}
 				_, stderr, runErr := snipcore.RunCwd(cmd, nil, objDir, 0)
 				if runErr != nil {
@@ -519,6 +534,41 @@ func runMeasure(argv []string) int {
 		return 1
 	}
 	return 0
+}
+
+// precompileReporter compiles snip_gc_report.ml once into buildBase
+// and returns the resulting .cmx path (absolute: parallel snippet
+// compiles run with their own working directory). The source is
+// copied into the build dir first, so derived files land there no
+// matter where the toolchain writes them. Outputs are always
+// rebuilt: a stale .cmx from another OCaml version reads back as
+// "Corrupted compilation unit description".
+func precompileReporter(buildBase, reporter string) (string, error) {
+	reporterDir := filepath.Join(buildBase, "reporter")
+	if err := os.MkdirAll(reporterDir, 0o755); err != nil {
+		return "", err
+	}
+	src, err := os.ReadFile(reporter)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(reporterDir, "snip_gc_report.ml"), src, 0o666); err != nil {
+		return "", err
+	}
+	for _, ext := range []string{".cmx", ".cmi", ".o"} {
+		_ = os.Remove(filepath.Join(reporterDir, "snip_gc_report"+ext))
+	}
+	_, stderr, runErr := snipcore.RunCwd(
+		[]string{"ocamlopt", "-O2", "-c", "snip_gc_report.ml"}, nil, reporterDir, 0)
+	if runErr != nil {
+		return "", fmt.Errorf("compile reporter: %v (%s)", runErr, string(stderr))
+	}
+	cmx := filepath.Join(reporterDir, "snip_gc_report.cmx")
+	if !fileExists(cmx) {
+		return "", fmt.Errorf("compile reporter: %s not produced", cmx)
+	}
+	absCmx, _ := filepath.Abs(cmx)
+	return absCmx, nil
 }
 
 func loadMeasureReport(path string) (*measure.Report, error) {
