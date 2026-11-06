@@ -120,7 +120,8 @@ jobs:
   # instrument=callgrind (Callgrind Ir + CPU time + peak RSS,
   # --repeat 1). Measures the checkout plus a baseline worktree.
   perf-instrumentation:
-    needs: test-gate
+    # No needs:: this job runs only on instrumented dispatches, where the
+    # test jobs are always skipped, so there is nothing to wait for.
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.instrument != 'none' }}
     runs-on: ubuntu-latest
     permissions:
@@ -304,9 +305,10 @@ jobs:
             bencher-baseline.json
             baseline-sha.txt
 
+  # No explicit if:: needs perf-instrumentation gates this job already,
+  # since perf runs only on instrumented dispatches.
   report-instrumentation:
     needs: perf-instrumentation
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.instrument != 'none' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
