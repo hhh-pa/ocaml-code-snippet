@@ -81,7 +81,7 @@ jobs:
   # yields missing stats, never an error).
   # Dispatches may also add instrumentation via the `instrument`
   # input (callgrind and/or Pin) in either mode.
-  # One job per shard (4 jobs). Stats land in the per-shard
+  # One job per shard (8 jobs). Stats land in the per-shard
   # artifacts and the summary tables; nothing reports to Bencher
   # (repeat-1 timing is not a threshold signal).
   # Lean recipe (--repeat 1).
@@ -97,7 +97,7 @@ jobs:
       # Let every shard finish so partial artifacts upload for diagnosis.
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       # Comparison mode needs history locally (worktree below);
       # everything else stays shallow and fast. The '0'/'1' are
