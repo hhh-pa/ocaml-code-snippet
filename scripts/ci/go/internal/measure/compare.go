@@ -7,30 +7,30 @@ import (
 	"strings"
 )
 
-// CompareMetric holds one metric's baseline vs current totals plus
-// the relative change in percent. A side is nil when that report
-// lacks the signal; DeltaPct is nil then, or when Base is zero.
+// CompareMetric holds one metric's from vs to totals plus the
+// relative change in percent. A side is nil when that report
+// lacks the signal; DeltaPct is nil then, or when From is zero.
 type CompareMetric struct {
-	Base     *float64 `json:"base,omitempty"`
-	Current  *float64 `json:"current,omitempty"`
+	From     *float64 `json:"from,omitempty"`
+	To       *float64 `json:"to,omitempty"`
 	DeltaPct *float64 `json:"delta_pct,omitempty"`
 }
 
 // CompareEntry is one snippet's metric deltas. Case counts can
 // differ per side when behavior changed between the two commits:
-// cases the baseline fails produce no signals there.
+// cases the from-tree fails produce no signals there.
 type CompareEntry struct {
-	Label        string                   `json:"label"`
-	BaseCases    int                      `json:"base_cases"`
-	CurrentCases int                      `json:"current_cases"`
-	Metrics      map[string]CompareMetric `json:"metrics"`
+	Label     string                   `json:"label"`
+	FromCases int                      `json:"from_cases"`
+	ToCases   int                      `json:"to_cases"`
+	Metrics   map[string]CompareMetric `json:"metrics"`
 }
 
-// CompareReport compares two measure reports, baseline vs current.
+// CompareReport compares two measure reports, from vs to.
 type CompareReport struct {
 	ToolVersion int            `json:"tool_version"`
-	Baseline    string         `json:"baseline"`
-	Current     string         `json:"current"`
+	From        string         `json:"from"`
+	To          string         `json:"to"`
 	Results     []CompareEntry `json:"results"`
 }
 
@@ -69,32 +69,32 @@ func bmfMetricValue(b Benchmark, key string) *float64 {
 	return &f
 }
 
-func deltaPct(base, cur *float64) *float64 {
-	if base == nil || cur == nil || *base == 0 {
+func deltaPct(from, to *float64) *float64 {
+	if from == nil || to == nil || *from == 0 {
 		return nil
 	}
-	d := (*cur - *base) / *base * 100
+	d := (*to - *from) / *from * 100
 	return &d
 }
 
 // CompareReports diffs two measure reports by snippet label using
 // the same summed-median BMF totals the summary table shows.
-func CompareReports(base, cur *Report, baseName, curName string) *CompareReport {
-	baseBMF := BuildBMF(base.Results)
-	curBMF := BuildBMF(cur.Results)
-	baseCases := map[string]int{}
-	for _, r := range base.Results {
-		baseCases[r.Label]++
+func CompareReports(from, to *Report, fromName, toName string) *CompareReport {
+	fromBMF := BuildBMF(from.Results)
+	toBMF := BuildBMF(to.Results)
+	fromCases := map[string]int{}
+	for _, r := range from.Results {
+		fromCases[r.Label]++
 	}
-	curCases := map[string]int{}
-	for _, r := range cur.Results {
-		curCases[r.Label]++
+	toCases := map[string]int{}
+	for _, r := range to.Results {
+		toCases[r.Label]++
 	}
 	labels := map[string]bool{}
-	for l := range baseCases {
+	for l := range fromCases {
 		labels[l] = true
 	}
-	for l := range curCases {
+	for l := range toCases {
 		labels[l] = true
 	}
 	var names []string
@@ -105,23 +105,23 @@ func CompareReports(base, cur *Report, baseName, curName string) *CompareReport 
 
 	rep := &CompareReport{
 		ToolVersion: ToolVersion,
-		Baseline:    baseName,
-		Current:     curName,
+		From:        fromName,
+		To:          toName,
 	}
 	for _, name := range names {
 		entry := CompareEntry{
-			Label:        name,
-			BaseCases:    baseCases[name],
-			CurrentCases: curCases[name],
-			Metrics:      map[string]CompareMetric{},
+			Label:     name,
+			FromCases: fromCases[name],
+			ToCases:   toCases[name],
+			Metrics:   map[string]CompareMetric{},
 		}
 		for _, m := range compareMetrics {
-			b := bmfMetricValue(baseBMF[name], m.key)
-			c := bmfMetricValue(curBMF[name], m.key)
-			if b == nil && c == nil {
+			f := bmfMetricValue(fromBMF[name], m.key)
+			t := bmfMetricValue(toBMF[name], m.key)
+			if f == nil && t == nil {
 				continue
 			}
-			entry.Metrics[m.key] = CompareMetric{Base: b, Current: c, DeltaPct: deltaPct(b, c)}
+			entry.Metrics[m.key] = CompareMetric{From: f, To: t, DeltaPct: deltaPct(f, t)}
 		}
 		rep.Results = append(rep.Results, entry)
 	}
@@ -135,23 +135,23 @@ func compareNum(v float64, isFloat bool) string {
 	return fmtInt(int64(v))
 }
 
-// compareCell renders "base -> current (+/-delta%)", tolerating a
+// compareCell renders "from -> to (+/-delta%)", tolerating a
 // missing side when a snippet gained or lost the signal.
 func compareCell(m CompareMetric, isFloat bool) string {
-	if m.Base == nil && m.Current == nil {
+	if m.From == nil && m.To == nil {
 		return "-"
 	}
-	if m.Base == nil {
-		return fmt.Sprintf("n/a -> %s", compareNum(*m.Current, isFloat))
+	if m.From == nil {
+		return fmt.Sprintf("n/a -> %s", compareNum(*m.To, isFloat))
 	}
-	if m.Current == nil {
-		return fmt.Sprintf("%s -> n/a", compareNum(*m.Base, isFloat))
+	if m.To == nil {
+		return fmt.Sprintf("%s -> n/a", compareNum(*m.From, isFloat))
 	}
 	if m.DeltaPct == nil {
-		return fmt.Sprintf("%s -> %s", compareNum(*m.Base, isFloat), compareNum(*m.Current, isFloat))
+		return fmt.Sprintf("%s -> %s", compareNum(*m.From, isFloat), compareNum(*m.To, isFloat))
 	}
 	return fmt.Sprintf("%s -> %s (%+.2f%%)",
-		compareNum(*m.Base, isFloat), compareNum(*m.Current, isFloat), *m.DeltaPct)
+		compareNum(*m.From, isFloat), compareNum(*m.To, isFloat), *m.DeltaPct)
 }
 
 // AppendCompareSummary appends the per-snippet delta table to path.
@@ -174,7 +174,7 @@ func AppendCompareSummary(path string, rep *CompareReport) error {
 	}
 
 	lines := []string{
-		fmt.Sprintf("### Performance Comparison (OCaml): `%s` -> `%s`", rep.Baseline, rep.Current),
+		fmt.Sprintf("### Performance Comparison (OCaml): `%s` -> `%s`", rep.From, rep.To),
 		"",
 	}
 	header := "| Benchmark |"
@@ -198,24 +198,24 @@ func AppendCompareSummary(path string, rep *CompareReport) error {
 			}
 			row += " " + compareCell(m, c.isFloat) + " |"
 			t := totals[c.key]
-			if m.Base != nil {
-				if t.Base == nil {
-					t.Base = new(float64)
+			if m.From != nil {
+				if t.From == nil {
+					t.From = new(float64)
 				}
-				*t.Base += *m.Base
+				*t.From += *m.From
 			}
-			if m.Current != nil {
-				if t.Current == nil {
-					t.Current = new(float64)
+			if m.To != nil {
+				if t.To == nil {
+					t.To = new(float64)
 				}
-				*t.Current += *m.Current
+				*t.To += *m.To
 			}
 		}
 		lines = append(lines, row)
 	}
 	for _, c := range cols {
 		t := totals[c.key]
-		t.DeltaPct = deltaPct(t.Base, t.Current)
+		t.DeltaPct = deltaPct(t.From, t.To)
 	}
 	total := fmt.Sprintf("| **Total (%d snippets)** |", len(rep.Results))
 	for _, c := range cols {

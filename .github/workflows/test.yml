@@ -7,29 +7,24 @@ on:
   workflow_dispatch:
     inputs:
       instrument:
-        description: 'Instrumentation backend (none = tests only)'
+        description: 'Instrumentation for the sweep (default sweep is timed-only)'
         required: false
-        default: 'none'
+        default: none
         type: choice
-        options: [none, pin, callgrind]
-      only:
-        description: 'Perf runs only: restrict to snippets whose label contains this'
-        required: false
-        default: ''
-        type: string
+        options: [none, callgrind, pin, both]
       compare:
-        description: 'Perf runs only: also measure the baseline and report the delta'
+        description: 'Performance comparison mode: open PR base/head, else previous commit, vs dispatched HEAD'
         required: false
-        default: true
+        default: false
         type: boolean
 
-# A newer run supersedes an older in-progress one to save resources:
-# CI runs (push/PR) cancel each other per branch, and manual perf
-# dispatches cancel same-backend dispatches, without CI and perf
-# cancelling each other.
+# One run per branch: a new push supersedes the previous commit's run
+# (stale sweeps cancel instead of burning runners for hours each).
+# Master keeps every run (no cancel) so no landed commit loses its
+# sweep record.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}-${{ github.event_name == 'workflow_dispatch' && inputs.instrument || 'ci' }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 # Test data (recipes superproject resource/shared) ships as an encrypted
 # bundle, tests/resources.tar.xz.asc (tar.xz, AES-256, ASCII-armored).
@@ -38,29 +33,16 @@ concurrency:
 # identical bundles). To rotate: run `snip bundle` with a fresh
 # passphrase, set the organization secret to the same value, and
 # rebuild the sibling bundles too (see `snip bundle --help`).
-#
-# Modes:
-# - Default (push, pull_request, dispatch with instrument=none): run
-#   the test suite once; each execution records CPU time and peak RSS
-#   from wait4 rusage, dumped as JSON artifacts plus a step-summary
-#   table. No second execution, no instrumentation.
-# - On-demand (dispatch with instrument=pin|callgrind): skip the test
-#   run (`snip measure` gates correctness on stdout itself) and measure
-#   the checkout plus a baseline checkout with the chosen backend, then
-#   report the delta. Baseline is automatic: the PR base when the
-#   dispatched branch has an open PR, else the previous commit (HEAD~1).
-#   Set compare=false for a faster single-sided run without the
-#   baseline and delta.
 
 jobs:
-  test-shard:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.instrument == 'none' }}
+  # Snippet correctness lives in the sweep below (its timed runs
+  # execute every case with the same stdout gate and timeout as
+  # `snip test`, so every algorithm must pass there). This job
+  # keeps only the harness checks, which the sweep does not run —
+  # and keeps branch policy's `test` context green with no admin
+  # change.
+  test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
-    name: test (shard ${{ matrix.shard }}/4)
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/profile-runner
@@ -69,6 +51,74 @@ jobs:
       - uses: ./.github/actions/snip-tools
         with:
           cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/**') }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: scripts/ci/go/go.mod
+          cache: false
+
+      - name: Run Go tests
+        run: |
+          cd scripts/ci/go
+          go test ./...
+
+      - name: Run snip self-test
+        run: '"$GITHUB_WORKSPACE/snip-bin/snip" measure --self-test'
+
+  # Full-matrix sweep: every snippet's timed stats (cpu/wall time,
+  # peak RSS) with the official OCaml toolchain (ocamlopt from apt;
+  # this repo has no second runtime leg) — and the
+  # snippet-correctness gate (each timed run diff-gates stdout
+  # exactly like `snip test`: same command, same normalize, same
+  # 300s timeout, missing resources fail).
+  # Pushes and PRs run the single-run mode: this tree only,
+  # timed-only, with a step summary table per shard.
+  # A manual dispatch may instead tick `compare`: each shard job
+  # then measures a from-tree and a to-tree (open PR base/head,
+  # else previous commit vs dispatched HEAD), and the report job
+  # matches the merged reports case by case (missing correspondence
+  # yields missing stats, never an error).
+  # Dispatches may also add instrumentation via the `instrument`
+  # input (callgrind and/or Pin) in either mode.
+  # One job per shard (4 jobs). Stats land in the per-shard
+  # artifacts and the summary tables; nothing reports to Bencher
+  # (repeat-1 timing is not a threshold signal).
+  # Lean recipe (--repeat 1).
+  # A toolchain failure fails the push: the sweep is a required
+  # signal.
+  perf-instrumentation:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    strategy:
+      # Let every shard finish so partial artifacts upload for diagnosis.
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      # Comparison mode needs history locally (worktree below);
+      # everything else stays shallow and fast. The '0'/'1' are
+      # strings on purpose: the number 0 is falsy, which would
+      # flip the || branch.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && inputs.compare && '0' || '1' }}
+      - uses: ./.github/actions/profile-runner
+        with:
+          cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
+      - uses: ./.github/actions/snip-tools
+        with:
+          cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/**') }}
+      # Pin kit + inscount tool, only for instrumented dispatches
+      # (default sweep is timed-only and skips this entirely).
+      - id: pin
+        if: inputs.instrument == 'pin' || inputs.instrument == 'both'
+        uses: ./.github/actions/pin-tools
+        with:
+          cache-key: pin-${{ runner.os }}-${{ hashFiles('.github/actions/pin-tools/**', 'scripts/ci/instrumentation/**') }}
 
       - name: Install OCaml
         uses: awalsh128/cache-apt-pkgs-action@v1.6.3
@@ -89,236 +139,175 @@ jobs:
             --passphrase "$RESOURCES_PASSPHRASE" \
             -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
 
-      - name: Compile OCaml snippets
-        run: '"$GITHUB_WORKSPACE/snip-bin/snip" test --resources tests/resources --jobs 4 --shard ${{ matrix.shard }}/4 --compile-only'
-
-      - name: Run OCaml tests
-        run: '"$GITHUB_WORKSPACE/snip-bin/snip" test --resources tests/resources --jobs 4 --timeout 300 --shard ${{ matrix.shard }}/4 --test-only --stats-output test-stats.json --summary-file "$GITHUB_STEP_SUMMARY"'
-
-      - name: Upload test stats
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: test-stats-shard-${{ matrix.shard }}
-          path: test-stats.json
-
-  # Aggregator: branch policy requires a check literally named "test",
-  # which the sharded matrix above no longer produces on its own.
-  # test-shard is skipped only on instrumented manual runs, where
-  # `snip measure` gates correctness on stdout itself. The id is
-  # test-gate (with display name test) so no needs: entry can
-  # resolve ambiguously against the test-shard prefix.
-  test-gate:
-    needs: test-shard
-    if: always()
-    runs-on: ubuntu-latest
-    name: test
-    steps:
-      - name: Require all shards green
+      # Instrumented dispatches only: direct apt install, no
+      # cache — manual runs are rare, and a fresh install keeps
+      # the default sweep free of packages it never uses.
+      - name: Install instrument dependencies
+        if: inputs.instrument == 'callgrind' || inputs.instrument == 'pin' || inputs.instrument == 'both'
         run: |
-          result="${{ needs.test-shard.result }}"
-          if [ "$result" = "success" ] || [ "$result" = "skipped" ]; then exit 0; else exit 1; fi
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y valgrind gcc g++ make
 
-  # On-demand instrumentation: manual dispatch with instrument=pin
-  # (Pin inscount + allocated bytes, --repeat 0) or
-  # instrument=callgrind (Callgrind Ir + CPU time + peak RSS,
-  # --repeat 1). Measures the checkout plus a baseline worktree.
-  perf-instrumentation:
-    # No needs: here: this job runs only on instrumented dispatches, where
-    # the test jobs are always skipped, so there is nothing to wait for.
-    # (A needs: entry also breaks the job: GitHub skips jobs with needs:
-    # whenever any transitive upstream job was skipped, even through a
-    # successful always() aggregator and regardless of if:.)
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.instrument != 'none' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: write
-      pull-requests: write
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
-    name: perf-${{ inputs.instrument }} (shard ${{ matrix.shard }}/4)
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/profile-runner
-        with:
-          cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
-      - uses: ./.github/actions/snip-tools
-        with:
-          cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/**') }}
-
-      - name: Install OCaml
-        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
-        with:
-          packages: ocaml ocaml-native-compilers ${{ inputs.instrument == 'callgrind' && 'valgrind' || '' }}
-          version: 1.0
-
-      - name: Decrypt and extract resources
-        env:
-          RESOURCES_PASSPHRASE: ${{ secrets.RESOURCES_PASSPHRASE }}
+      # Valgrind gate (callgrind dispatches only): without it a
+      # broken install yields green but vacuous shards — `snip
+      # measure` only warns and records no Ir. So probe exactly
+      # what snip probes (valgrind on PATH + `valgrind --version`
+      # exit 0 within 30s); on failure reinstall once from apt,
+      # and fail LOUDLY if valgrind is still unusable.
+      - name: Verify valgrind usable
+        if: inputs.instrument == 'callgrind' || inputs.instrument == 'both'
         run: |
-          if [ -z "$RESOURCES_PASSPHRASE" ]; then
-            echo "error: RESOURCES_PASSPHRASE secret is not configured" >&2
-            exit 1
+          usable() { command -v valgrind >/dev/null && timeout 30 valgrind --version >/dev/null 2>&1; }
+          if ! usable; then
+            echo "valgrind unusable; reinstalling from apt"
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall valgrind gcc g++ make
           fi
-          mkdir -p tests/resources
-          gpg --batch --yes --pinentry-mode loopback \
-            --passphrase "$RESOURCES_PASSPHRASE" \
-            -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
+          command -v valgrind
+          ver=$(timeout 30 valgrind --version)
+          echo "$ver"
+          echo "valgrind: $ver" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Resolve baseline commit
-        id: baseline
-        if: ${{ inputs.compare }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Comparison mode (manual dispatch with `compare`): resolve
+      # the from/to commits and check the from-tree out as a
+      # worktree. If the dispatched branch heads an open PR, from
+      # is that PR's base SHA; otherwise from is the previous
+      # commit — to is always the dispatched HEAD. The base SHA
+      # may not be local (it lives on another branch), so it is
+      # fetched on demand; anything still missing fails loudly.
+      - name: Resolve comparison refs
+        id: refs
+        if: github.event_name == 'workflow_dispatch' && inputs.compare
         run: |
+          ensure_present() {
+            if ! git cat-file -e "$1" 2>/dev/null; then
+              echo "$2 $1 not local; fetching from origin"
+              git fetch --no-tags --depth=1 origin "$1" || true
+            fi
+            if ! git cat-file -e "$1" 2>/dev/null; then
+              echo "error: $2 ref '$1' is not available" >&2
+              exit 1
+            fi
+          }
           branch="${{ github.ref_name }}"
-          pr_base="$(gh pr list --head "$branch" --state open --json baseRefOid --limit 1 --jq '.[0].baseRefOid // empty')"
-          if [ -n "$pr_base" ]; then
-            base="$pr_base"
-            echo "PR context: branch $branch has an open PR; baseline is PR base $base"
+          to="$(git rev-parse HEAD)"
+          pr="$(gh pr list --head "$branch" --state open --limit 1 --json number,baseRefOid)" \
+            || { echo "error: PR lookup for branch $branch failed" >&2; exit 1; }
+          if [ "$(echo "$pr" | jq 'length')" = "1" ]; then
+            from="$(echo "$pr" | jq -r '.[0].baseRefOid')"
+            echo "branch $branch heads PR #$(echo "$pr" | jq -r '.[0].number'); comparing its base -> HEAD"
           else
-            base="$(git rev-parse HEAD~1)"
-            echo "Non-PR context: baseline is previous commit $base"
+            if ! from="$(git rev-parse "$to~1" 2>/dev/null)"; then
+              echo "error: no open PR for $branch and $to has no parent to compare against" >&2
+              exit 1
+            fi
+            echo "no open PR for $branch; comparing previous commit -> HEAD"
           fi
-          git fetch --no-tags origin "$base" 2>/dev/null || true
-          git worktree add --detach /tmp/snip-baseline "$base"
-          echo "sha=$base" >> "$GITHUB_OUTPUT"
-
-      - name: Record baseline SHA
-        if: ${{ inputs.compare }}
-        run: echo "${{ steps.baseline.outputs.sha }}" > baseline-sha.txt
-
-      - name: Restore Pin kit and inscount tool
-        if: ${{ inputs.instrument == 'pin' }}
-        uses: actions/cache@v5
-        with:
-          path: ~/instrumentation
-          key: pin-4.4-${{ runner.os }}-${{ hashFiles('scripts/ci/setup-instrumentation.sh', 'scripts/ci/instrumentation/**') }}
-
-      - name: Provision Intel Pin 4.4 and build inscount tool
-        if: ${{ inputs.instrument == 'pin' }}
-        run: scripts/ci/setup-instrumentation.sh
-
-      - name: "Measure performance (Pin-only: instructions + allocated bytes)"
-        if: ${{ inputs.instrument == 'pin' }}
-        run: |
-          "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
-            --repeat 0 --jobs 2 --timeout 300 \
-            --shard ${{ matrix.shard }}/4 \
-            --only "${{ inputs.only }}" \
-            --pin --pin-bin "$INSTRUMENTATION_BIN" --pin-tool "$INSTRUMENTATION_TOOL" \
-            --output perf-results.json --bmf-output bencher-bmf.json \
-            --summary-file "$GITHUB_STEP_SUMMARY"
-
-      - name: "Measure performance (Callgrind: Ir + CPU time + peak RSS)"
-        if: ${{ inputs.instrument == 'callgrind' }}
-        run: |
-          "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
-            --repeat 1 --jobs 2 --timeout 300 \
-            --shard ${{ matrix.shard }}/4 \
-            --only "${{ inputs.only }}" \
-            --output perf-results.json --bmf-output bencher-bmf.json \
-            --summary-file "$GITHUB_STEP_SUMMARY"
-
-      - name: Measure baseline (Pin-only)
-        if: ${{ inputs.instrument == 'pin' && inputs.compare }}
-        working-directory: /tmp/snip-baseline
-        run: |
-          set +e
-          "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources "$GITHUB_WORKSPACE/tests/resources" \
-            --repeat 0 --jobs 2 --timeout 300 \
-            --shard ${{ matrix.shard }}/4 \
-            --only "${{ inputs.only }}" \
-            --pin --pin-bin "$INSTRUMENTATION_BIN" --pin-tool "$INSTRUMENTATION_TOOL" \
-            --output "$GITHUB_WORKSPACE/perf-baseline.json" --bmf-output "$GITHUB_WORKSPACE/bencher-baseline.json"
-          code=$?
-          set -e
-          if [ ! -f "$GITHUB_WORKSPACE/perf-baseline.json" ]; then
-            echo "baseline produced no report" >&2
+          ensure_present "$from" "from"
+          if [ "$from" = "$to" ]; then
+            echo "error: from and to are the same commit ($from); nothing to compare" >&2
             exit 1
           fi
-          echo "baseline measure exit=$code (case failures tolerated for comparison)"
+          git worktree add --detach /tmp/sweep-from "$from"
+          echo "from=$from" >> "$GITHUB_OUTPUT"
+          echo "to=$to" >> "$GITHUB_OUTPUT"
+          printf '{"from":"%s","to":"%s"}\n' "$from" "$to" > sweep-refs.json
+          echo "comparing \`$from\` -> \`$to\`" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Measure baseline (Callgrind)
-        if: ${{ inputs.instrument == 'callgrind' && inputs.compare }}
-        working-directory: /tmp/snip-baseline
+      - name: Measure sweep (single run)
+        if: github.event_name != 'workflow_dispatch' || !inputs.compare
+        # Lean recipe: one timed run per case (stdout gate plus
+        # cpu/wall time and peak RSS from wait4 rusage).
+        # Instrumentation is opt-in per dispatch (`instrument`
+        # input: callgrind and/or Pin add their phases per case;
+        # the setup steps above fail loudly when an instrument is
+        # unusable, so no vacuous counts here). NOTE: no explicit
+        # callgrind flag — valgrind on PATH selects the callgrind
+        # phase, and CI installs valgrind exactly when instrument
+        # is callgrind or both.
         run: |
-          set +e
-          "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources "$GITHUB_WORKSPACE/tests/resources" \
+          common=(--resources tests/resources
+            --repeat 1 --jobs 2 --timeout 300
+            --shard ${{ matrix.shard }}/4)
+          if [ "${{ inputs.instrument }}" = "pin" ] || [ "${{ inputs.instrument }}" = "both" ]; then
+            common+=(--pin --pin-bin "${{ steps.pin.outputs.pin-bin }}"
+              --pin-tool "${{ steps.pin.outputs.pin-tool }}"
+              --pin-repeat 1 --pin-timeout 900)
+          fi
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure "${common[@]}" \
+            --output sweep-results.json --bmf-output sweep-bmf.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Measure sweep (comparison)
+        if: github.event_name == 'workflow_dispatch' && inputs.compare
+        # Two legs on this same runner: to-tree (workspace
+        # checkout) and from-tree (worktree above). One harness
+        # build measures both trees, with the same resources and
+        # the same Pin kit — only the snippets differ. Timed-only
+        # unless the dispatch also sets `instrument` (same flags
+        # as the single run).
+        run: |
+          SNIP="$GITHUB_WORKSPACE/snip-bin/snip"
+          OUT="$GITHUB_WORKSPACE"
+          RES="$GITHUB_WORKSPACE/tests/resources"
+          SHARD="${{ matrix.shard }}/4"
+          extra=()
+          if [ "${{ inputs.instrument }}" = "pin" ] || [ "${{ inputs.instrument }}" = "both" ]; then
+            extra+=(--pin --pin-bin "${{ steps.pin.outputs.pin-bin }}"
+              --pin-tool "${{ steps.pin.outputs.pin-tool }}"
+              --pin-repeat 1 --pin-timeout 900)
+          fi
+          "$SNIP" measure --resources tests/resources \
             --repeat 1 --jobs 2 --timeout 300 \
-            --shard ${{ matrix.shard }}/4 \
-            --only "${{ inputs.only }}" \
-            --output "$GITHUB_WORKSPACE/perf-baseline.json" --bmf-output "$GITHUB_WORKSPACE/bencher-baseline.json"
-          code=$?
-          set -e
-          if [ ! -f "$GITHUB_WORKSPACE/perf-baseline.json" ]; then
-            echo "baseline produced no report" >&2
-            exit 1
-          fi
-          echo "baseline measure exit=$code (case failures tolerated for comparison)"
+            --shard "$SHARD" "${extra[@]}" \
+            --output sweep-results-to.json --bmf-output sweep-bmf-to.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+          (cd /tmp/sweep-from && "$SNIP" measure --resources "$RES" \
+            --repeat 1 --jobs 2 --timeout 300 \
+            --shard "$SHARD" "${extra[@]}" \
+            --output "$OUT/sweep-results-from.json" --bmf-output "$OUT/sweep-bmf-from.json" \
+            --summary-file "$GITHUB_STEP_SUMMARY")
 
-      - name: Install Bencher CLI
-        if: env.BENCHER_API_KEY != ''
-        env:
-          BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
-        uses: bencherdev/bencher@main
-
-      - name: Track benchmarks with Bencher
-        if: env.BENCHER_API_KEY != ''
-        env:
-          BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            bencher run \
-              --project ocaml-code-snippet \
-              --key '${{ secrets.BENCHER_API_KEY }}' \
-              --branch "${{ github.head_ref }}" \
-              --hash "${{ github.event.pull_request.head.sha }}" \
-              --start-point "${{ github.base_ref }}" \
-              --start-point-hash "${{ github.event.pull_request.base.sha }}" \
-              --start-point-clone-thresholds \
-              --testbed ubuntu-latest-ocaml \
-              --adapter json \
-              --file bencher-bmf.json \
-              --github-actions "${{ secrets.GITHUB_TOKEN }}"
-          else
-            bencher run \
-              --project ocaml-code-snippet \
-              --key '${{ secrets.BENCHER_API_KEY }}' \
-              --branch "${{ github.ref_name }}" \
-              --testbed ubuntu-latest-ocaml \
-              --threshold-measure ${{ inputs.instrument == 'pin' && 'pin_instructions' || 'instructions' }} \
-              --threshold-test percentage \
-              --threshold-min-sample-size 10 \
-              --threshold-max-sample-size 64 \
-              --threshold-upper-boundary 0.10 \
-              --adapter json \
-              --file bencher-bmf.json \
-              --github-actions "${{ secrets.GITHUB_TOKEN }}"
-          fi
-
-      - name: Upload perf results
-        if: always()
+      # No Bencher reporting: repeat-1 timing is not a threshold
+      # signal. Stats live in these artifacts and the merged
+      # tables below.
+      # Single-run artifacts keep the plain scheme; comparison
+      # artifacts add the from/to role. The report job downloads
+      # by event below.
+      - name: Upload sweep results
+        if: always() && (github.event_name != 'workflow_dispatch' || !inputs.compare)
         uses: actions/upload-artifact@v7
         with:
-          name: perf-results-shard-${{ matrix.shard }}
+          name: sweep-results-shard-${{ matrix.shard }}
           path: |
-            perf-results.json
-            bencher-bmf.json
-            perf-baseline.json
-            bencher-baseline.json
-            baseline-sha.txt
+            sweep-results.json
+            sweep-bmf.json
 
-  # No explicit if:: needs perf-instrumentation gates this job already,
-  # since perf runs only on instrumented dispatches.
+      - name: Upload sweep results (from)
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.compare
+        uses: actions/upload-artifact@v7
+        with:
+          name: sweep-results-from-shard-${{ matrix.shard }}
+          path: |
+            sweep-results-from.json
+            sweep-bmf-from.json
+            sweep-refs.json
+
+      - name: Upload sweep results (to)
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.compare
+        uses: actions/upload-artifact@v7
+        with:
+          name: sweep-results-to-shard-${{ matrix.shard }}
+          path: |
+            sweep-results-to.json
+            sweep-bmf-to.json
+            sweep-refs.json
+
   report-instrumentation:
     needs: perf-instrumentation
     runs-on: ubuntu-latest
+    # No Bencher anywhere in the sweep (see above): the merged
+    # tables and bundles in this job are the stats record.
     permissions:
       contents: read
     steps:
@@ -330,49 +319,79 @@ jobs:
         with:
           cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/**') }}
 
-      - name: Download shard results
+      - name: Download sweep results (single run)
+        if: github.event_name != 'workflow_dispatch' || !inputs.compare
         uses: actions/download-artifact@v8
         with:
-          pattern: perf-results-shard-*
+          pattern: sweep-results-shard-*
 
-      - name: Merge shard reports
+      - name: Download sweep results (comparison)
+        if: github.event_name == 'workflow_dispatch' && inputs.compare
+        uses: actions/download-artifact@v8
+        with:
+          pattern: sweep-results-*-shard-*
+
+      - name: Merge sweep reports (single run)
+        if: github.event_name != 'workflow_dispatch' || !inputs.compare
         run: |
-          "$GITHUB_WORKSPACE/snip-bin/snip" measure --merge perf-results-*/perf-results.json \
-            --output perf-results-merged.json \
-            --bmf-output bencher-bmf-merged.json \
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure --merge sweep-results-*/sweep-results.json \
+            --output sweep-results-merged.json \
+            --bmf-output sweep-bmf-merged.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
+      # The merge must equal the plain BMF union: sharding is
+      # snippet-cohesive, so no benchmark straddles two shards.
       - name: Verify merge matches per-shard BMFs
+        if: github.event_name != 'workflow_dispatch' || !inputs.compare
         run: |
-          jq -s 'add' perf-results-*/bencher-bmf.json > bencher-bmf-jq.json
-          diff <(jq -S . bencher-bmf-merged.json) <(jq -S . bencher-bmf-jq.json)
+          jq -s 'add' sweep-results-*/sweep-bmf.json > sweep-bmf-jq.json
+          diff <(jq -S . sweep-bmf-merged.json) <(jq -S . sweep-bmf-jq.json)
 
-      - name: Merge baseline reports
-        if: ${{ inputs.compare }}
+      - name: Merge sweep reports (comparison)
+        if: github.event_name == 'workflow_dispatch' && inputs.compare
         run: |
-          "$GITHUB_WORKSPACE/snip-bin/snip" measure --merge perf-results-*/perf-baseline.json \
-            --output perf-baseline-merged.json \
-            --bmf-output bencher-baseline-merged.json
+          SNIP="$GITHUB_WORKSPACE/snip-bin/snip"
+          for side in from to; do
+            # Unquoted glob: --merge takes shell-expanded paths.
+            "$SNIP" measure --merge sweep-results-*/sweep-results-$side.json \
+              --output "sweep-results-$side-merged.json" \
+              --bmf-output "sweep-bmf-$side-merged.json" \
+              --summary-file "$GITHUB_STEP_SUMMARY"
+            jq -s 'add' sweep-results-*/sweep-bmf-$side.json > "sweep-bmf-$side-jq.json"
+            diff <(jq -S . "sweep-bmf-$side-merged.json") <(jq -S . "sweep-bmf-$side-jq.json")
+          done
 
-      - name: Compare baseline vs current
-        if: ${{ inputs.compare }}
+      # Report-only: missing correspondence yields missing stats,
+      # never an error. Labels come from the sweep's refs sidecar
+      # (any shard's copy; all are identical).
+      - name: Compare from/to reports
+        if: github.event_name == 'workflow_dispatch' && inputs.compare
         run: |
-          BASE_SHA="$(cat perf-results-shard-0/baseline-sha.txt)"
-          "$GITHUB_WORKSPACE/snip-bin/snip" measure \
-            --compare perf-baseline-merged.json perf-results-merged.json \
-            --baseline-label "${BASE_SHA:0:7}" \
-            --current-label "$(git rev-parse --short HEAD)" \
-            --output perf-compare.json \
+          refs=$(ls sweep-results-*/sweep-refs.json | head -n 1)
+          from="$(jq -r .from "$refs")"; to="$(jq -r .to "$refs")"
+          "$GITHUB_WORKSPACE/snip-bin/snip" compare \
+            --from sweep-results-from-merged.json --to sweep-results-to-merged.json \
+            --from-label "${from:0:7}" --to-label "${to:0:7}" \
+            --output sweep-compare.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload merged results
-        if: always()
+      - name: Upload merged sweep results
+        if: always() && (github.event_name != 'workflow_dispatch' || !inputs.compare)
         uses: actions/upload-artifact@v7
         with:
-          name: perf-results-merged
+          name: sweep-results-merged
           path: |
-            perf-results-merged.json
-            bencher-bmf-merged.json
-            perf-baseline-merged.json
-            bencher-baseline-merged.json
-            perf-compare.json
+            sweep-results-merged.json
+            sweep-bmf-merged.json
+
+      - name: Upload comparison results
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.compare
+        uses: actions/upload-artifact@v7
+        with:
+          name: sweep-results-merged
+          path: |
+            sweep-results-from-merged.json
+            sweep-bmf-from-merged.json
+            sweep-results-to-merged.json
+            sweep-bmf-to-merged.json
+            sweep-compare.json

@@ -28,17 +28,11 @@ For automated validation, the shared test cases from the recipes superproject (`
 
 ### CI/CD Pipeline
 
-`.github/workflows/test.yml` validates the snippets on push to `master`, pull requests, and manual dispatch. It decrypts the bundle with the `RESOURCES_PASSPHRASE` organization secret (shared with the clojure/python snippet repos) and runs:
+`.github/workflows/test.yml` validates the snippets on push to `master`, pull requests, and manual dispatch. It decrypts the bundle with the `RESOURCES_PASSPHRASE` organization secret (shared with the clojure/python snippet repos) and runs a full-matrix sweep: `snip measure --repeat 1` executes every `src/**/*.ml` script against the decrypted cases, diff-gating stdout exactly like `snip test` (same command, same timeout, missing resources fail), while recording CPU/wall time and peak RSS from wait4 rusage. One run per branch supersedes the previous commit's run (master keeps every run); snippets split across 4 cohesive shards.
 
-```sh
-snip test --resources tests/resources --jobs 4 --timeout 300
-```
+The `test` job keeps only the harness checks (`go test ./...` plus `snip measure --self-test`), which the sweep does not run. The sweep defaults to timed-only; manual dispatch offers two inputs: `instrument` (`none`, `callgrind`, `pin`, `both`) adds instrumentation phases, and `compare` (default false) measures a from-tree and a to-tree instead — the PR base vs HEAD when the dispatched branch heads an open PR, otherwise the previous commit vs HEAD — with the report job publishing a from/to delta table (`snip compare`, informational only).
 
-By default (push, PR, or dispatch with `instrument=none`) CI runs the test suite once: each execution records CPU time and peak RSS from wait4 rusage, dumped per shard as a `test-stats-shard-*` JSON artifact plus a step-summary table. No second execution, no instrumentation.
-
-Manual dispatch offers three inputs: `instrument` (`none`, `pin`, `callgrind`), `only` (restrict perf runs to matching snippet labels), and `compare` (default true). With `instrument=pin|callgrind` the test run is skipped — `snip measure` gates correctness on stdout itself — and the `perf-instrumentation` job measures the checkout plus a baseline checkout, reporting the delta. The baseline is automatic: the PR base when the dispatched branch has an open PR, otherwise the previous commit (`HEAD~1`). Set `compare=false` for a faster single-sided run without the baseline and delta.
-
-To test locally, decrypt the bundle into `tests/resources/` (passphrase holders only) and run the same command:
+To test locally, decrypt the bundle into `tests/resources/` (passphrase holders only):
 
 ```sh
 mkdir -p tests/resources
@@ -74,9 +68,9 @@ snip measure --resources tests/resources --repeat 0 \
 snip measure --self-test
 ```
 
-On-demand CI runs (`instrument=pin`) provision Pin 4.4 (kit + built tool cached across runs) and measure instruction counts plus allocated bytes across 4 shards (`--repeat 0`), reporting to Bencher under testbed `ubuntu-latest-ocaml` and measure `pin_instructions` (gated by `BENCHER_API_KEY`). With `instrument=callgrind`, CI installs valgrind instead and records Callgrind `Ir` plus CPU time and peak RSS (`--repeat 1`), tracked under measure `instructions`. In both modes the job also measures a baseline checkout (PR base when the branch has an open PR, else the previous commit) with the same harness and inputs; a fan-in `report-instrumentation` job merges all shard results, verifies equality against the plain BMF union (`jq -s 'add'`), and publishes a combined Markdown summary plus a baseline-vs-current delta table (`snip measure --compare`, informational only) to the job summary.
+CI sweeps always run timed (`--repeat 1`); dispatches add instrumentation via `instrument`: `pin` provisions Pin 4.4 (kit + built tool cached across runs) and records instruction counts plus allocated bytes alongside the timed phase, `callgrind` installs valgrind and records Callgrind `Ir`, and `both` runs all phases. Nothing reports to Bencher (repeat-1 timing is not a threshold signal); stats live in the per-shard artifacts and the merged summary tables. With `compare` ticked, each shard job also measures a from-tree (PR base, else previous commit) and the report job publishes a from/to delta table.
 
-Note: Pin counts and Callgrind Ir are different signals on different scales, so Bencher tracks them as separate measures (`pin_instructions`, `instructions`) by design. The Callgrind path works locally with valgrind installed and via on-demand CI.
+Note: Pin counts and Callgrind Ir are different signals on different scales. `--repeat 0` (pin-only, no timed phase) stays available for local runs; CI always includes the timed phase.
 
 ## Categories (393 snippets)
 

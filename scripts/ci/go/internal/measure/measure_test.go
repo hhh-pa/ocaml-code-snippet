@@ -250,8 +250,8 @@ func med(v float64) *NumberSummary {
 	return &NumberSummary{Min: v, Median: v, Max: v}
 }
 
-func compareReportsFixture() (base, cur *Report) {
-	base = &Report{Results: []CaseResult{
+func compareReportsFixture() (from, to *Report) {
+	from = &Report{Results: []CaseResult{
 		{Label: "sort/x", Case: "tc0", Summary: &CaseSummary{
 			PinInstructions: med(1000), AllocatedBytes: med(500), CpuS: med(0.02)}},
 		{Label: "sort/x", Case: "tc1", Summary: &CaseSummary{
@@ -259,18 +259,18 @@ func compareReportsFixture() (base, cur *Report) {
 		{Label: "old/only", Case: "tc0", Summary: &CaseSummary{
 			PinInstructions: med(100)}},
 	}}
-	cur = &Report{Results: []CaseResult{
+	to = &Report{Results: []CaseResult{
 		{Label: "sort/x", Case: "tc0", Summary: &CaseSummary{
 			PinInstructions: med(1200), AllocatedBytes: med(500), CpuS: med(0.01)}},
 		{Label: "new/only", Case: "tc0", Summary: &CaseSummary{
 			PinInstructions: med(50)}},
 	}}
-	return base, cur
+	return from, to
 }
 
 func TestCompareReports(t *testing.T) {
-	base, cur := compareReportsFixture()
-	rep := CompareReports(base, cur, "b1", "c1")
+	from, to := compareReportsFixture()
+	rep := CompareReports(from, to, "f1", "t1")
 	if rep.ToolVersion != ToolVersion {
 		t.Fatalf("tool_version = %d, want %d", rep.ToolVersion, ToolVersion)
 	}
@@ -282,18 +282,18 @@ func TestCompareReports(t *testing.T) {
 		byLabel[e.Label] = e
 	}
 	x := byLabel["sort/x"]
-	if x.BaseCases != 2 || x.CurrentCases != 1 {
-		t.Fatalf("sort/x cases = %d/%d, want 2/1", x.BaseCases, x.CurrentCases)
+	if x.FromCases != 2 || x.ToCases != 1 {
+		t.Fatalf("sort/x cases = %d/%d, want 2/1", x.FromCases, x.ToCases)
 	}
 	pin := x.Metrics["pin_instructions"]
-	if pin.Base == nil || *pin.Base != 2000 || pin.Current == nil || *pin.Current != 1200 {
+	if pin.From == nil || *pin.From != 2000 || pin.To == nil || *pin.To != 1200 {
 		t.Fatalf("sort/x pin = %+v, want 2000 -> 1200", pin)
 	}
 	if pin.DeltaPct == nil || math.Abs(*pin.DeltaPct+40) > 1e-9 {
 		t.Fatalf("sort/x pin delta = %v, want -40", pin.DeltaPct)
 	}
 	alloc := x.Metrics["allocated_bytes"]
-	if alloc.Base == nil || *alloc.Base != 1000 || alloc.Current == nil || *alloc.Current != 500 {
+	if alloc.From == nil || *alloc.From != 1000 || alloc.To == nil || *alloc.To != 500 {
 		t.Fatalf("sort/x alloc = %+v, want 1000 -> 500", alloc)
 	}
 	if _, ok := x.Metrics["instructions"]; ok {
@@ -301,19 +301,19 @@ func TestCompareReports(t *testing.T) {
 	}
 	old := byLabel["old/only"]
 	oldPin := old.Metrics["pin_instructions"]
-	if oldPin.Base == nil || *oldPin.Base != 100 || oldPin.Current != nil || oldPin.DeltaPct != nil {
-		t.Fatalf("old/only pin = %+v, want base-only", oldPin)
+	if oldPin.From == nil || *oldPin.From != 100 || oldPin.To != nil || oldPin.DeltaPct != nil {
+		t.Fatalf("old/only pin = %+v, want from-only", oldPin)
 	}
 	neu := byLabel["new/only"]
 	newPin := neu.Metrics["pin_instructions"]
-	if newPin.Base != nil || newPin.Current == nil || *newPin.Current != 50 {
-		t.Fatalf("new/only pin = %+v, want current-only", newPin)
+	if newPin.From != nil || newPin.To == nil || *newPin.To != 50 {
+		t.Fatalf("new/only pin = %+v, want to-only", newPin)
 	}
 }
 
 func TestAppendCompareSummary(t *testing.T) {
-	base, cur := compareReportsFixture()
-	rep := CompareReports(base, cur, "b1", "c1")
+	from, to := compareReportsFixture()
+	rep := CompareReports(from, to, "f1", "t1")
 	path := filepath.Join(t.TempDir(), "compare.md")
 	if err := AppendCompareSummary(path, rep); err != nil {
 		t.Fatalf("AppendCompareSummary: %v", err)
@@ -323,7 +323,7 @@ func TestAppendCompareSummary(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 	out := string(data)
-	if !strings.Contains(out, "### Performance Comparison (OCaml): `b1` -> `c1`") {
+	if !strings.Contains(out, "### Performance Comparison (OCaml): `f1` -> `t1`") {
 		t.Fatalf("header wrong:\n%s", out)
 	}
 	if strings.Contains(out, "Instructions (Ir)") {

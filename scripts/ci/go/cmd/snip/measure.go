@@ -34,10 +34,6 @@ correctness on the Pin run's stdout. Reports carry Runs 0 with no
 time/memory summaries; the BMF and summary table omit cpu_time
 rather than emitting zeros.
 
---compare diffs two measure reports (baseline vs current) per snippet
-using summed-median BMF totals; it is informational only and never
-fails on regressions.
-
 Usage:
   snip measure [--resources DIR] [--repeat N] [--jobs N] [--timeout S]
                [--only SUBSTR] [--shard K/N] [--output JSON]
@@ -48,11 +44,9 @@ Usage:
   snip measure --merge shard-*.json [--output JSON] [--bmf-output JSON]
                [--summary-file MD]
 
-  snip measure --compare BASELINE CURRENT [--output JSON]
-               [--summary-file MD] [--baseline-label NAME]
-               [--current-label NAME]
-
   snip measure --self-test
+
+Report comparison lives in snip compare.
 `
 
 type measureTask struct {
@@ -73,17 +67,13 @@ func runMeasure(argv []string) int {
 	pinRepeat := measure.PinRepeatDefault
 	pinTimeout := 600
 	var only, shard, output, bmfOutput, summaryFile, mergeFilesStr, pinBin, pinTool string
-	baselineLabel := "baseline"
-	currentLabel := "current"
 	var selfTest, pin bool
 
 	// Parse flags manually or with flagSpec; note that --merge can take multiple files.
-	// We extract --merge, --compare, and --self-test first if present.
+	// We extract --merge and --self-test first if present.
 	var remaining []string
 	var mergePaths []string
-	var comparePaths []string
 	isMerge := false
-	isCompare := false
 
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
@@ -95,12 +85,6 @@ func runMeasure(argv []string) int {
 				i++
 				mergePaths = append(mergePaths, argv[i])
 			}
-		} else if arg == "--compare" {
-			isCompare = true
-			for i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") {
-				i++
-				comparePaths = append(comparePaths, argv[i])
-			}
 		} else {
 			remaining = append(remaining, arg)
 		}
@@ -108,17 +92,15 @@ func runMeasure(argv []string) int {
 
 	_, err := parseFlags("measure", remaining, flagSpec{
 		Strs: map[string]*string{
-			"resources":      &resources,
-			"only":           &only,
-			"shard":          &shard,
-			"output":         &output,
-			"bmf-output":     &bmfOutput,
-			"summary-file":   &summaryFile,
-			"merge":          &mergeFilesStr,
-			"pin-bin":        &pinBin,
-			"pin-tool":       &pinTool,
-			"baseline-label": &baselineLabel,
-			"current-label":  &currentLabel,
+			"resources":    &resources,
+			"only":         &only,
+			"shard":        &shard,
+			"output":       &output,
+			"bmf-output":   &bmfOutput,
+			"summary-file": &summaryFile,
+			"merge":        &mergeFilesStr,
+			"pin-bin":      &pinBin,
+			"pin-tool":     &pinTool,
 		},
 		Ints: map[string]*int{
 			"jobs":        &jobs,
@@ -190,38 +172,6 @@ func runMeasure(argv []string) int {
 		return 0
 	}
 
-	if isCompare {
-		if len(comparePaths) != 2 {
-			fmt.Fprintln(os.Stderr, "snip measure: --compare needs exactly two reports: --compare BASELINE CURRENT")
-			return 2
-		}
-		baseRep, err := loadMeasureReport(comparePaths[0])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "snip measure compare: %v\n", err)
-			return 1
-		}
-		curRep, err := loadMeasureReport(comparePaths[1])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "snip measure compare: %v\n", err)
-			return 1
-		}
-		crep := measure.CompareReports(baseRep, curRep, baselineLabel, currentLabel)
-		if output != "" {
-			data, _ := json.MarshalIndent(crep, "", "  ")
-			if err := os.WriteFile(output, data, 0o666); err != nil {
-				fmt.Fprintf(os.Stderr, "write %s: %v\n", output, err)
-				return 1
-			}
-		}
-		if summaryFile != "" {
-			if err := measure.AppendCompareSummary(summaryFile, crep); err != nil {
-				fmt.Fprintf(os.Stderr, "append summary: %v\n", err)
-			}
-		}
-		fmt.Printf("Compared %s vs %s: %d snippets.\n", baselineLabel, currentLabel, len(crep.Results))
-		return 0
-	}
-
 	_, valgrindErr := exec.LookPath("valgrind")
 	hasValgrind := valgrindErr == nil
 	if !hasValgrind && repeat > 0 {
@@ -270,12 +220,18 @@ func runMeasure(argv []string) int {
 	}
 
 	var tasks []measureTask
+	var missing []string
 	for _, entry := range found {
 		label := entry.Label
 		if only != "" && !strings.Contains(label, only) && !strings.Contains(entry.Script, only) {
 			continue
 		}
 		if len(entry.Cases) == 0 {
+			// No --only filter: a caseless snippet is missing
+			// resources and fails the sweep like `snip test`.
+			if only == "" {
+				missing = append(missing, label)
+			}
 			continue
 		}
 		for _, c := range entry.Cases {
@@ -391,6 +347,9 @@ func runMeasure(argv []string) int {
 
 	var results []measure.CaseResult
 	var failures []string
+	for _, label := range missing {
+		failures = append(failures, fmt.Sprintf("%s: no resources found", label))
+	}
 	done := 0
 
 	sem := make(chan struct{}, jobs)
@@ -547,18 +506,6 @@ func precompileReporter(buildBase, reporter string) (string, error) {
 	}
 	absCmx, _ := filepath.Abs(cmx)
 	return absCmx, nil
-}
-
-func loadMeasureReport(path string) (*measure.Report, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var rep measure.Report
-	if err := json.Unmarshal(data, &rep); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	return &rep, nil
 }
 
 func formatInt(n int64) string {

@@ -3,6 +3,7 @@
 //
 //	snip test     correctness runner and compiler (tests/run_tests.py)
 //	snip measure  load-independent perf measurement (tools/measure.py)
+//	snip compare  from/to perf-report comparison (CI comparison mode)
 //	snip bundle   encrypted resource-bundle builder (tools/build_bundle.sh)
 //	snip decrypt  decrypt and extract test resources
 //
@@ -31,6 +32,8 @@ func dispatch(argv []string) int {
 		return runTest(argv[1:])
 	case "measure":
 		return runMeasure(argv[1:])
+	case "compare":
+		return runCompare(argv[1:])
 	case "bundle":
 		return runBundle(argv[1:])
 	case "decrypt":
@@ -46,6 +49,7 @@ const usage = `Usage: snip <subcommand> [flags]
 Subcommands:
   test      compile and run OCaml snippets against shared test cases
   measure   load-independent performance measurement under Callgrind
+  compare   compare two measure reports (from/to legs)
   bundle    build or rotate the encrypted test-resource bundle
   decrypt   decrypt and extract the test-resource bundle
 

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -26,5 +29,76 @@ func TestSnipSelfTest(t *testing.T) {
 	}
 	if !strings.Contains(out, "self-test passed!") {
 		t.Fatalf("output lacks pass message:\n%s", out)
+	}
+}
+
+func TestSnipCompare(t *testing.T) {
+	bin := cmdtest.Build(t, ".")
+	dir := t.TempDir()
+	report := func(pin int64) string {
+		p := strconv.FormatInt(pin, 10)
+		return `{"tool_version":4,"results":[` +
+			`{"label":"s/x","stem":"x","case":"tc0","script":"s",` +
+			`"summary":{"runs":0,"pin_instructions":{"min":` + p +
+			`,"median":` + p + `,"max":` + p + `}}}]` +
+			`,"failures":[]}`
+	}
+	if err := os.WriteFile(filepath.Join(dir, "from.json"), []byte(report(1000)), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "to.json"), []byte(report(1500)), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	out, code := cmdtest.Run(t, bin, dir, "compare",
+		"--from", "from.json", "--to", "to.json",
+		"--from-label", "f", "--to-label", "t",
+		"--output", "c.json", "--summary-file", "c.md")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, out)
+	}
+	if !strings.Contains(out, "compare f -> t: 1 snippets.") {
+		t.Fatalf("output lacks summary:\n%s", out)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "c.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"from": "f"`, `"to": "t"`, `"delta_pct": 50`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("c.json lacks %s:\n%s", want, data)
+		}
+	}
+	md, err := os.ReadFile(filepath.Join(dir, "c.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(md), "1,000 -> 1,500 (+50.00%)") {
+		t.Fatalf("summary lacks delta row:\n%s", md)
+	}
+}
+
+func TestSnipMeasureMissingResources(t *testing.T) {
+	bin := cmdtest.Build(t, ".")
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "src", "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "src", "a", "b.ml"), []byte("let () = ()\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "tests", "resources"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, _, code := cmdtest.RunBothEnv(t, bin, dir, nil, "measure",
+		"--resources", "tests/resources", "--repeat", "1", "--output", "rep.json")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (missing resources fail the sweep)", code)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "rep.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "a/b: no resources found") {
+		t.Fatalf("report lacks missing failure:\n%s", data)
 	}
 }
