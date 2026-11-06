@@ -118,7 +118,7 @@ jobs:
   # --repeat 1). Measures the checkout plus a baseline worktree.
   perf-instrumentation:
     needs: test
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.instrument != 'none' }}
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
