@@ -18,21 +18,37 @@ import (
 	"github.com/hhh-pa/ocaml-code-snippet/scripts/ci/go/internal/snipcore"
 )
 
-const measureUsage = `Load-independent Callgrind performance measurement for OCaml snippets.
+const measureUsage = `Load-independent performance measurement for OCaml snippets.
 
 Compiles every src/**/*.ml script to a native binary using ocamlopt -O2,
-runs it against the shared test cases under Valgrind Callgrind, and records
-simulated instruction reads (Ir) and execution times.
+runs it against the shared test cases --repeat times, gating correctness
+on stdout, and records CPU time and peak RSS from wait4 rusage. With
+--callgrind the timed phase runs under Valgrind Callgrind and records
+simulated instruction reads (Ir) too (CPU/RSS then describe the valgrind
+process, tool overhead included); with the pin flags each case is also
+measured once under Pin, yielding instruction counts plus allocated bytes
+from an inscount tool run.
+
+--repeat 0 selects the pin-only mode: no timed phase runs, and each case
+is measured once under Pin, which yields pin_instructions together with
+allocated_bytes (parsed from the run's stderr) while still gating
+correctness on the Pin run's stdout. Reports carry Runs 0 with no
+time/memory summaries; the BMF and summary table omit cpu_time
+rather than emitting zeros.
 
 Usage:
   snip measure [--resources DIR] [--repeat N] [--jobs N] [--timeout S]
                [--only SUBSTR] [--shard K/N] [--output JSON]
-               [--bmf-output JSON] [--summary-file MD]
+               [--bmf-output JSON] [--summary-file MD] [--callgrind]
+               [--pin] [--pin-bin BIN] [--pin-tool SO] [--pin-repeat N]
+               [--pin-timeout S]
 
   snip measure --merge shard-*.json [--output JSON] [--bmf-output JSON]
                [--summary-file MD]
 
   snip measure --self-test
+
+Report comparison lives in snip compare.
 `
 
 type measureTask struct {
@@ -50,8 +66,10 @@ func runMeasure(argv []string) int {
 	jobs := 2
 	repeat := 1
 	timeout := 300
-	var only, shard, output, bmfOutput, summaryFile, mergeFilesStr string
-	var selfTest bool
+	pinRepeat := measure.PinRepeatDefault
+	pinTimeout := 600
+	var only, shard, output, bmfOutput, summaryFile, mergeFilesStr, pinBin, pinTool string
+	var selfTest, pin, callgrind bool
 
 	// Parse flags manually or with flagSpec; note that --merge can take multiple files.
 	// We extract --merge and --self-test first if present.
@@ -83,14 +101,20 @@ func runMeasure(argv []string) int {
 			"bmf-output":   &bmfOutput,
 			"summary-file": &summaryFile,
 			"merge":        &mergeFilesStr,
+			"pin-bin":      &pinBin,
+			"pin-tool":     &pinTool,
 		},
 		Ints: map[string]*int{
-			"jobs":    &jobs,
-			"repeat":  &repeat,
-			"timeout": &timeout,
+			"jobs":        &jobs,
+			"repeat":      &repeat,
+			"timeout":     &timeout,
+			"pin-repeat":  &pinRepeat,
+			"pin-timeout": &pinTimeout,
 		},
 		Bools: map[string]*bool{
 			"self-test": &selfTest,
+			"pin":       &pin,
+			"callgrind": &callgrind,
 		},
 	})
 	if err != nil {
@@ -99,6 +123,19 @@ func runMeasure(argv []string) int {
 			return 0
 		}
 		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	if repeat < 0 {
+		fmt.Fprintln(os.Stderr, "snip measure: --repeat must be >= 0")
+		return 2
+	}
+	if pinRepeat < 1 {
+		fmt.Fprintln(os.Stderr, "snip measure: --pin-repeat must be >= 1")
+		return 2
+	}
+	if pinTimeout < 1 {
+		fmt.Fprintln(os.Stderr, "snip measure: --pin-timeout must be >= 1")
 		return 2
 	}
 
@@ -139,9 +176,43 @@ func runMeasure(argv []string) int {
 	}
 
 	_, valgrindErr := exec.LookPath("valgrind")
-	hasValgrind := valgrindErr == nil
-	if !hasValgrind {
-		fmt.Fprintln(os.Stderr, "warning: valgrind not found in PATH; running binary directly without Callgrind simulation")
+	hasValgrind := callgrind && valgrindErr == nil
+	if callgrind && valgrindErr != nil {
+		fmt.Fprintln(os.Stderr, "snip measure: --callgrind needs valgrind on PATH")
+		return 1
+	}
+
+	usePin := pin && measure.PinUsable(pinBin, pinTool)
+	if pin && !usePin {
+		fmt.Fprintln(os.Stderr, "snip measure: --pin needs a usable kit (--pin-bin launcher and --pin-tool inscount .so)")
+		return 1
+	}
+	var pinVersion *string
+	if usePin {
+		pinVersion = measure.PinVersion(pinBin)
+	}
+	effectivePin := 0
+	if usePin {
+		effectivePin = pinRepeat
+	}
+	if repeat == 0 && effectivePin == 0 {
+		fmt.Fprintln(os.Stderr, "snip measure: --repeat 0 needs a measurement phase (--pin with a usable kit and tool)")
+		return 2
+	}
+
+	// Link the allocation reporter into measure binaries so the Pin
+	// run yields allocated_bytes alongside pin_instructions. Binaries
+	// land in bin-measure/, apart from `snip test` binaries in bin/,
+	// so a cached test binary can never silently stand in for a
+	// reporter-linked one.
+	reporter := filepath.Join(root, "scripts", "ci", "measure", "snip_gc_report.ml")
+	linkReporter := fileExists(reporter)
+	if effectivePin > 0 && !linkReporter {
+		fmt.Fprintln(os.Stderr, "warning: allocation reporter missing at scripts/ci/measure/snip_gc_report.ml; allocated_bytes will be null")
+	}
+	binDir := "bin-measure"
+	if !linkReporter {
+		binDir = "bin"
 	}
 
 	_, ocamloptErr := exec.LookPath("ocamlopt")
@@ -154,12 +225,18 @@ func runMeasure(argv []string) int {
 	}
 
 	var tasks []measureTask
+	var missing []string
 	for _, entry := range found {
 		label := entry.Label
 		if only != "" && !strings.Contains(label, only) && !strings.Contains(entry.Script, only) {
 			continue
 		}
 		if len(entry.Cases) == 0 {
+			// No --only filter: a caseless snippet is missing
+			// resources and fails the sweep like `snip test`.
+			if only == "" {
+				missing = append(missing, label)
+			}
 			continue
 		}
 		for _, c := range entry.Cases {
@@ -181,36 +258,16 @@ func runMeasure(argv []string) int {
 		return tasks[i].caseName < tasks[j].caseName
 	})
 
-	// Shard by snippet label (cohesive sharding)
+	// Shard by snippet label (cohesive sharding, shared with snip test)
+	shardIndex, shardTotal := 0, 1
 	if shard != "" {
-		k, n, err := snipcore.ParseMeasureShard(shard)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+		var shardErr error
+		shardIndex, shardTotal, shardErr = snipcore.ParseShard(shard)
+		if shardErr != nil {
+			fmt.Fprintln(os.Stderr, shardErr)
 			return 1
 		}
-		groups := map[string][]measureTask{}
-		for _, t := range tasks {
-			groups[t.label] = append(groups[t.label], t)
-		}
-		var groupNames []string
-		for name := range groups {
-			groupNames = append(groupNames, name)
-		}
-		sort.Strings(groupNames)
-
-		keep := map[string]bool{}
-		for i, name := range groupNames {
-			if i%n == k {
-				keep[name] = true
-			}
-		}
-		var sharded []measureTask
-		for _, t := range tasks {
-			if keep[t.label] {
-				sharded = append(sharded, t)
-			}
-		}
-		tasks = sharded
+		tasks = snipcore.FilterShard(tasks, func(t measureTask) string { return t.label }, shardIndex, shardTotal)
 	}
 
 	totalTasks := len(tasks)
@@ -235,6 +292,22 @@ func runMeasure(argv []string) int {
 	compileFailures := map[string]string{}
 
 	if hasOcamlopt {
+		// Precompile the allocation reporter ONCE before the parallel
+		// loop: every measure binary links it, and compiling the
+		// shared reporter source in parallel corrupts its derived
+		// files (concurrent ocamlopt runs race on
+		// scripts/ci/measure/snip_gc_report.cmx, failing snippets
+		// with "Corrupted compilation unit description"). The loop
+		// below then links the prebuilt .cmx read-only.
+		var reporterCmx string
+		if linkReporter {
+			var err error
+			reporterCmx, err = precompileReporter(buildBase, reporter)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "snip measure: %v\n", err)
+				return 1
+			}
+		}
 		fmt.Printf("Compiling %d snippets with ocamlopt -O2...\n", len(neededScripts))
 		sem := make(chan struct{}, jobs)
 		var wg sync.WaitGroup
@@ -249,7 +322,7 @@ func runMeasure(argv []string) int {
 
 				rel, _ := filepath.Rel(srcDir, script)
 				relStem := strings.TrimSuffix(rel, ".ml")
-				binPath := filepath.Join(buildBase, "bin", relStem)
+				binPath := filepath.Join(buildBase, binDir, relStem)
 				objDir := filepath.Join(buildBase, "obj", relStem)
 
 				mu.Lock()
@@ -265,6 +338,9 @@ func runMeasure(argv []string) int {
 				absBin, _ := filepath.Abs(binPath)
 				absScript, _ := filepath.Abs(script)
 				cmd := []string{"ocamlopt", "-O2", "-o", absBin, absScript}
+				if linkReporter {
+					cmd = []string{"ocamlopt", "-O2", "-o", absBin, reporterCmx, absScript}
+				}
 				_, stderr, runErr := snipcore.RunCwd(cmd, nil, objDir, 0)
 				if runErr != nil {
 					mu.Lock()
@@ -278,6 +354,15 @@ func runMeasure(argv []string) int {
 
 	var results []measure.CaseResult
 	var failures []string
+	// Missing labels are shard-scoped like tasks: each shard reports
+	// only its own, so the merged failures list carries no duplicates.
+	scopedMissing := missing
+	if shard != "" {
+		scopedMissing = snipcore.FilterShard(missing, func(s string) string { return s }, shardIndex, shardTotal)
+	}
+	for _, label := range scopedMissing {
+		failures = append(failures, fmt.Sprintf("%s: no resources found", label))
+	}
 	done := 0
 
 	sem := make(chan struct{}, jobs)
@@ -308,7 +393,26 @@ func runMeasure(argv []string) int {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			summary, measErr := measure.MeasureCaseCallgrind(hasValgrind, runCmd, tk.inp, tk.outp, repeat, timeout)
+			var summary *measure.CaseSummary
+			var measErr error
+			if repeat > 0 {
+				summary, measErr = measure.MeasureCaseCallgrind(hasValgrind, runCmd, tk.inp, tk.outp, repeat, timeout)
+			} else {
+				// Pin-only: no timed phase; the Pin phase below
+				// hangs its signals on this shell (Runs stays 0).
+				summary = &measure.CaseSummary{Runs: 0}
+			}
+			var pinSkipped *string
+			if measErr == nil && effectivePin > 0 {
+				var pinSummary *measure.CaseSummary
+				pinSummary, pinSkipped, measErr = measure.MeasureCasePin(
+					tk.label, tk.caseName, runCmd, tk.inp, tk.outp,
+					pinBin, pinTool, effectivePin, pinTimeout)
+				if measErr == nil && pinSummary != nil {
+					summary.PinInstructions = pinSummary.PinInstructions
+					summary.AllocatedBytes = pinSummary.AllocatedBytes
+				}
+			}
 
 			mu.Lock()
 			done++
@@ -317,14 +421,24 @@ func runMeasure(argv []string) int {
 				if summary.Instructions != nil {
 					insnStr = fmt.Sprintf("%s Ir", formatInt(int64(summary.Instructions.Median)))
 				}
-				fmt.Printf("[%d/%d] %s/%s: %s\n", done, totalTasks, tk.label, tk.caseName, insnStr)
+				pinInfo := ""
+				if summary.PinInstructions != nil {
+					pinInfo = fmt.Sprintf("; %s Pin", formatInt(int64(summary.PinInstructions.Median)))
+				} else if pinSkipped != nil {
+					pinInfo = fmt.Sprintf(" (pin skipped: %s)", *pinSkipped)
+				}
+				if summary.AllocatedBytes != nil {
+					pinInfo += fmt.Sprintf("; %sB alloc", formatInt(int64(summary.AllocatedBytes.Median)))
+				}
+				fmt.Printf("[%d/%d] %s/%s: %s%s\n", done, totalTasks, tk.label, tk.caseName, insnStr, pinInfo)
 				relScript, _ := filepath.Rel(root, tk.script)
 				results = append(results, measure.CaseResult{
-					Label:   tk.label,
-					Stem:    tk.stem,
-					Case:    tk.caseName,
-					Script:  filepath.ToSlash(relScript),
-					Summary: summary,
+					Label:      tk.label,
+					Stem:       tk.stem,
+					Case:       tk.caseName,
+					Script:     filepath.ToSlash(relScript),
+					Summary:    summary,
+					PinSkipped: pinSkipped,
 				})
 			} else {
 				fmt.Printf("[%d/%d] FAIL %s/%s: %v\n", done, totalTasks, tk.label, tk.caseName, measErr)
@@ -343,10 +457,12 @@ func runMeasure(argv []string) int {
 	})
 
 	rep := &measure.Report{
-		ToolVersion: 1,
+		ToolVersion: measure.ToolVersion,
 		Platform:    runtime.GOOS + "/" + runtime.GOARCH,
 		Date:        time.Now().UTC().Format(time.RFC3339),
 		HasValgrind: hasValgrind,
+		PinUsed:     usePin,
+		PinVersion:  pinVersion,
 		Results:     results,
 		Failures:    failures,
 	}
@@ -368,6 +484,41 @@ func runMeasure(argv []string) int {
 		return 1
 	}
 	return 0
+}
+
+// precompileReporter compiles snip_gc_report.ml once into buildBase
+// and returns the resulting .cmx path (absolute: parallel snippet
+// compiles run with their own working directory). The source is
+// copied into the build dir first, so derived files land there no
+// matter where the toolchain writes them. Outputs are always
+// rebuilt: a stale .cmx from another OCaml version reads back as
+// "Corrupted compilation unit description".
+func precompileReporter(buildBase, reporter string) (string, error) {
+	reporterDir := filepath.Join(buildBase, "reporter")
+	if err := os.MkdirAll(reporterDir, 0o755); err != nil {
+		return "", err
+	}
+	src, err := os.ReadFile(reporter)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(reporterDir, "snip_gc_report.ml"), src, 0o666); err != nil {
+		return "", err
+	}
+	for _, ext := range []string{".cmx", ".cmi", ".o"} {
+		_ = os.Remove(filepath.Join(reporterDir, "snip_gc_report"+ext))
+	}
+	_, stderr, runErr := snipcore.RunCwd(
+		[]string{"ocamlopt", "-O2", "-c", "snip_gc_report.ml"}, nil, reporterDir, 0)
+	if runErr != nil {
+		return "", fmt.Errorf("compile reporter: %v (%s)", runErr, string(stderr))
+	}
+	cmx := filepath.Join(reporterDir, "snip_gc_report.cmx")
+	if !fileExists(cmx) {
+		return "", fmt.Errorf("compile reporter: %s not produced", cmx)
+	}
+	absCmx, _ := filepath.Abs(cmx)
+	return absCmx, nil
 }
 
 func formatInt(n int64) string {
@@ -397,21 +548,55 @@ totals: 987654321
 		return 1
 	}
 
+	if n, err := measure.ParsePinCount("Count 846018869\n"); err != nil || n != 846018869 {
+		fmt.Fprintf(os.Stderr, "ParsePinCount: expected 846018869, got %d, err: %v\n", n, err)
+		return 1
+	}
+	if n, err := measure.ParsePinCount("Pin 3.31\nCount 1\nCount 42\n"); err != nil || n != 42 {
+		fmt.Fprintf(os.Stderr, "ParsePinCount: later Count must win, got %d, err: %v\n", n, err)
+		return 1
+	}
+	for _, bad := range []string{"", "no counts here\n", "Count abc\n", "Count\n", "Count 1 2\n"} {
+		if n, err := measure.ParsePinCount(bad); err == nil {
+			fmt.Fprintf(os.Stderr, "ParsePinCount: must reject %q, got %d\n", bad, n)
+			return 1
+		}
+	}
+
+	if n, found := measure.ParseAllocBytes("noise\nSNIP_ALLOCATED_BYTES=12345\n"); !found || n != 12345 {
+		fmt.Fprintf(os.Stderr, "ParseAllocBytes: expected (12345, true), got (%d, %v)\n", n, found)
+		return 1
+	}
+	if n, found := measure.ParseAllocBytes("SNIP_ALLOCATED_BYTES=1\nSNIP_ALLOCATED_BYTES=42\n"); !found || n != 42 {
+		fmt.Fprintf(os.Stderr, "ParseAllocBytes: later marker must win, got (%d, %v)\n", n, found)
+		return 1
+	}
+	for _, absent := range []string{"", "no marker here\n", "SNIP_ALLOCATED_BYTES=abc\n", "SNIP_ALLOCATED_BYTES=\n", "SNIP_ALLOCATED_BYTES=-5\n"} {
+		if n, found := measure.ParseAllocBytes("snippet stderr\n" + absent); found {
+			fmt.Fprintf(os.Stderr, "ParseAllocBytes: must not match %q, got %d\n", absent, n)
+			return 1
+		}
+	}
+
 	mockResults := []measure.CaseResult{
 		{
 			Label: "sort/merge_sort",
 			Case:  "tc0",
 			Summary: &measure.CaseSummary{
-				Instructions: &measure.NumberSummary{Median: 1000},
-				CpuS:         &measure.NumberSummary{Median: 0.05},
+				Instructions:    &measure.NumberSummary{Median: 1000},
+				PinInstructions: &measure.NumberSummary{Median: 5000},
+				AllocatedBytes:  &measure.NumberSummary{Median: 800},
+				CpuS:            &measure.NumberSummary{Median: 0.05},
 			},
 		},
 		{
 			Label: "sort/merge_sort",
 			Case:  "tc1",
 			Summary: &measure.CaseSummary{
-				Instructions: &measure.NumberSummary{Median: 2000},
-				CpuS:         &measure.NumberSummary{Median: 0.05},
+				Instructions:    &measure.NumberSummary{Median: 2000},
+				PinInstructions: &measure.NumberSummary{Median: 7000},
+				AllocatedBytes:  &measure.NumberSummary{Median: 1200},
+				CpuS:            &measure.NumberSummary{Median: 0.05},
 			},
 		},
 	}
@@ -421,8 +606,41 @@ totals: 987654321
 		fmt.Fprintf(os.Stderr, "BMF instructions: expected 3000, got %v\n", m.Instructions)
 		return 1
 	}
+	if m.PinInstructions == nil || m.PinInstructions.Value.(int64) != 12000 {
+		fmt.Fprintf(os.Stderr, "BMF pin_instructions: expected 12000, got %v\n", m.PinInstructions)
+		return 1
+	}
+	if m.AllocatedBytes == nil || m.AllocatedBytes.Value.(int64) != 2000 {
+		fmt.Fprintf(os.Stderr, "BMF allocated_bytes: expected 2000, got %v\n", m.AllocatedBytes)
+		return 1
+	}
 	if m.CpuTime == nil || math.Abs(m.CpuTime.Value.(float64)-0.10) > 1e-6 {
 		fmt.Fprintf(os.Stderr, "BMF cpu_time: expected 0.10, got %v\n", m.CpuTime)
+		return 1
+	}
+
+	pinOnly := []measure.CaseResult{
+		{
+			Label: "sort/merge_sort",
+			Case:  "tc0",
+			Summary: &measure.CaseSummary{
+				Runs:            0,
+				PinInstructions: &measure.NumberSummary{Median: 5000},
+				AllocatedBytes:  &measure.NumberSummary{Median: 800},
+			},
+		},
+	}
+	pm := measure.BuildBMF(pinOnly)["sort/merge_sort"]
+	if pm.CpuTime != nil {
+		fmt.Fprintf(os.Stderr, "BMF pin-only: cpu_time must be omitted, got %v\n", pm.CpuTime)
+		return 1
+	}
+	if pm.PinInstructions == nil || pm.PinInstructions.Value.(int64) != 5000 {
+		fmt.Fprintf(os.Stderr, "BMF pin-only: pin_instructions expected 5000, got %v\n", pm.PinInstructions)
+		return 1
+	}
+	if pm.AllocatedBytes == nil || pm.AllocatedBytes.Value.(int64) != 800 {
+		fmt.Fprintf(os.Stderr, "BMF pin-only: allocated_bytes expected 800, got %v\n", pm.AllocatedBytes)
 		return 1
 	}
 

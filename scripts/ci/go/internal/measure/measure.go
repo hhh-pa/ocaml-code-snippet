@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"time"
 
 	"github.com/hhh-pa/ocaml-code-snippet/scripts/ci/go/internal/snipcore"
 )
 
 // MeasureCaseCallgrind runs a single test case under Callgrind or directly,
-// repeats repeat times, and computes the CaseSummary.
+// repeats repeat times, and computes the CaseSummary. CpuS and MaxRSSKb
+// come from wait4 rusage of each run; under valgrind they describe the
+// valgrind process (tool overhead included), on direct runs the snippet.
 func MeasureCaseCallgrind(hasValgrind bool, execCmd []string, inputPath, outputPath string, repeat, timeoutSecs int) (*CaseSummary, error) {
 	expectedBytes, err := os.ReadFile(outputPath)
 	if err != nil {
@@ -48,9 +49,7 @@ func MeasureCaseCallgrind(hasValgrind bool, execCmd []string, inputPath, outputP
 			cmd = execCmd
 		}
 
-		t0 := time.Now()
-		stdout, stderr, runErr := snipcore.Run(cmd, inputBytes, timeoutSecs)
-		elapsed := time.Since(t0).Seconds()
+		stdout, stderr, procStat, runErr := snipcore.RunStats(cmd, inputBytes, timeoutSecs)
 
 		if runErr != nil {
 			if _, ok := runErr.(*snipcore.TimeoutError); ok {
@@ -86,9 +85,9 @@ func MeasureCaseCallgrind(hasValgrind bool, execCmd []string, inputPath, outputP
 			}
 		}
 
-		wallVals = append(wallVals, elapsed)
-		cpuVals = append(cpuVals, elapsed)
-		rssVals = append(rssVals, 0)
+		wallVals = append(wallVals, procStat.WallS)
+		cpuVals = append(cpuVals, procStat.CpuS)
+		rssVals = append(rssVals, float64(procStat.MaxRSSKb))
 	}
 
 	summary := &CaseSummary{

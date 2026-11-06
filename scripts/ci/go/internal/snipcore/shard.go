@@ -2,26 +2,14 @@ package snipcore
 
 import (
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 )
 
-// ParseTestShard parses the 1-based I/N --shard of run_tests.py,
-// returning the 0-based index and total.
-func ParseTestShard(text string) (index, total int, err error) {
-	picked, total, ok := splitShard(text)
-	if !ok {
-		return 0, 0, errors.New("bad --shard '" + text + "': want I/N")
-	}
-	index = picked - 1
-	if total < 1 || index < 0 || index >= total {
-		return 0, 0, errors.New("bad --shard '" + text + "': want 1 <= I <= N")
-	}
-	return index, total, nil
-}
-
-// ParseMeasureShard parses the 0-based K/N --shard of measure.py.
-func ParseMeasureShard(text string) (index, total int, err error) {
+// ParseShard parses the 0-based K/N --shard flag shared by snip test
+// and snip measure, returning the index and total.
+func ParseShard(text string) (index, total int, err error) {
 	picked, total, ok := splitShard(text)
 	if !ok {
 		return 0, 0, errors.New("bad --shard '" + text + "': want K/N")
@@ -30,6 +18,40 @@ func ParseMeasureShard(text string) (index, total int, err error) {
 		return 0, 0, errors.New("bad --shard '" + text + "': need 0 <= K < N")
 	}
 	return picked, total, nil
+}
+
+// FilterShard keeps the items whose label falls in shard index/total:
+// labels are sorted and dealt round-robin across shards, so a label's
+// items always stay together (cohesive sharding) and every subcommand
+// splits the suite identically. Item order is preserved. Callers
+// parse the K/N flag with ParseShard first.
+func FilterShard[T any](items []T, label func(T) string, index, total int) []T {
+	if total < 1 {
+		return items
+	}
+	seen := map[string]bool{}
+	var groupNames []string
+	for _, it := range items {
+		if l := label(it); !seen[l] {
+			seen[l] = true
+			groupNames = append(groupNames, l)
+		}
+	}
+	sort.Strings(groupNames)
+
+	keep := map[string]bool{}
+	for i, name := range groupNames {
+		if i%total == index {
+			keep[name] = true
+		}
+	}
+	var out []T
+	for _, it := range items {
+		if keep[label(it)] {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 func splitShard(text string) (picked, total int, ok bool) {
