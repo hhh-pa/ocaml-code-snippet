@@ -34,6 +34,10 @@ For automated validation, the shared test cases from the recipes superproject (`
 snip test --resources tests/resources --jobs 4 --timeout 300
 ```
 
+By default (push, PR, or dispatch with `instrument=none`) CI runs the test suite once: each execution records CPU time and peak RSS from wait4 rusage, dumped per shard as a `test-stats-shard-*` JSON artifact plus a step-summary table. No second execution, no instrumentation.
+
+Manual dispatch offers two inputs: `instrument` (`none`, `pin`, `callgrind`) and `only` (restrict perf runs to matching snippet labels). With `instrument=pin|callgrind` the test run is skipped — `snip measure` gates correctness on stdout itself — and the `perf-instrumentation` job measures the checkout plus a baseline checkout, reporting the delta. The baseline is automatic: the PR base when the dispatched branch has an open PR, otherwise the previous commit (`HEAD~1`).
+
 To test locally, decrypt the bundle into `tests/resources/` (passphrase holders only) and run the same command:
 
 ```sh
@@ -58,7 +62,9 @@ See `snip bundle --help` for rotation instructions when using a fresh passphrase
 - `pin_instructions` (executed application instructions) — completely load-invariant and deterministic across runs and runners sharing one Pin version.
 - `allocated_bytes` (total allocation volume in bytes, from `Gc.allocated_bytes`) — the benchmark binary reports it on stderr at exit via a linked reporter module (`scripts/ci/measure/snip_gc_report.ml`); the harness parses it from the same Pin run that yields the instruction count.
 
-`--repeat 0` selects this pin-only mode: no timed phase runs, correctness is still gated on the Pin run's stdout, and reports carry `Runs: 0` with no time summaries (the BMF and summary table omit `cpu_time` rather than emitting zeros). Peak RSS is deliberately not reported from instrumented runs: under Pin the resident set is dominated by Pin's own footprint, not the snippet.
+`--repeat 0` selects this pin-only mode: no timed phase runs, correctness is still gated on the Pin run's stdout, and reports carry `Runs: 0` with no time summaries (the BMF and summary table omit `cpu_time` rather than emitting zeros).
+
+CPU time and peak RSS come from the plain test run (single execution, no instrumentation). Under instrumentation the figures describe the tool process: Pin's footprint dominates RSS, and Callgrind inflates CPU — so pin-only reports carry no time/memory summaries, while Callgrind CPU/RSS include tool overhead.
 
 ```sh
 scripts/ci/setup-instrumentation.sh  # one-time Pin 4.4 kit + tool provisioning
@@ -68,9 +74,9 @@ snip measure --resources tests/resources --repeat 0 \
 snip measure --self-test
 ```
 
-CI runs correctness across sharded runners in the `test-shard` jobs, aggregated by `test`. Then the `perf-instrumentation` job provisions Pin 4.4 (kit + built tool cached across runs) and measures instruction counts plus allocated bytes across 4 shards (`--repeat 0`), reporting to Bencher under testbed `ubuntu-latest-ocaml` and measure `pin_instructions` (gated by `BENCHER_API_KEY`). A fan-in `report-instrumentation` job merges all shard results, verifies equality against the plain BMF union (`jq -s 'add'`), and publishes a combined Markdown summary table to the GitHub Actions job summary.
+On-demand CI runs (`instrument=pin`) provision Pin 4.4 (kit + built tool cached across runs) and measure instruction counts plus allocated bytes across 4 shards (`--repeat 0`), reporting to Bencher under testbed `ubuntu-latest-ocaml` and measure `pin_instructions` (gated by `BENCHER_API_KEY`). With `instrument=callgrind`, CI installs valgrind instead and records Callgrind `Ir` plus CPU time and peak RSS (`--repeat 1`), tracked under measure `instructions`. In both modes the job also measures a baseline checkout (PR base when the branch has an open PR, else the previous commit) with the same harness and inputs; a fan-in `report-instrumentation` job merges all shard results, verifies equality against the plain BMF union (`jq -s 'add'`), and publishes a combined Markdown summary plus a baseline-vs-current delta table (`snip measure --compare`, informational only) to the job summary.
 
-Note: the old Callgrind `instructions` (`Ir`) measure ends with the Pin switch — Pin counts and Callgrind Ir are different signals on different scales, so Bencher history restarts under `pin_instructions` by design. The Callgrind code path stays in the harness for local runs with valgrind installed.
+Note: Pin counts and Callgrind Ir are different signals on different scales, so Bencher tracks them as separate measures (`pin_instructions`, `instructions`) by design. The Callgrind path works locally with valgrind installed and via on-demand CI.
 
 ## Categories (393 snippets)
 

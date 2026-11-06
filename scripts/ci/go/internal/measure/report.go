@@ -17,11 +17,13 @@ type NumberSummary struct {
 
 // ToolVersion tags the report; 2 adds the pin_instructions
 // signal plus pin_version provenance; 3 adds the --repeat 0
-// pin-only mode and the allocated_bytes signal. Measure links an
+// pin-only mode and the allocated_bytes signal; 4 makes cpu_s
+// real wait4 CPU time (it was wall clock) and maxrss_kb real
+// peak RSS (it was zero). Measure links an
 // allocation-reporter module into its binaries from v3 on, which
 // shifts Pin counts by a small deterministic constant: compare
 // pin_instructions within one tool version only.
-const ToolVersion = 3
+const ToolVersion = 4
 
 // CaseSummary holds per-case aggregate measurements across repeats.
 // Pin-only results (--repeat 0) carry Runs 0 with just the

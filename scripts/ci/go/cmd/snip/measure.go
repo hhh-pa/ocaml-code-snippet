@@ -22,8 +22,10 @@ const measureUsage = `Load-independent performance measurement for OCaml snippet
 
 Compiles every src/**/*.ml script to a native binary using ocamlopt -O2,
 runs it against the shared test cases under Valgrind Callgrind, and records
-simulated instruction reads (Ir) and execution times, plus (under the pin
-flags) Pin instruction counts and allocated bytes from an inscount tool run.
+simulated instruction reads (Ir), CPU time and peak RSS from wait4 rusage,
+plus (under the pin flags) Pin instruction counts and allocated bytes
+from an inscount tool run. Under valgrind the CPU and RSS figures
+describe the valgrind process, tool overhead included.
 
 --repeat 0 selects the pin-only mode: no timed phase runs, and each case
 is measured once under Pin, which yields pin_instructions together with
@@ -31,6 +33,10 @@ allocated_bytes (parsed from the run's stderr) while still gating
 correctness on the Pin run's stdout. Reports carry Runs 0 with no
 time/memory summaries; the BMF and summary table omit cpu_time
 rather than emitting zeros.
+
+--compare diffs two measure reports (baseline vs current) per snippet
+using summed-median BMF totals; it is informational only and never
+fails on regressions.
 
 Usage:
   snip measure [--resources DIR] [--repeat N] [--jobs N] [--timeout S]
@@ -41,6 +47,10 @@ Usage:
 
   snip measure --merge shard-*.json [--output JSON] [--bmf-output JSON]
                [--summary-file MD]
+
+  snip measure --compare BASELINE CURRENT [--output JSON]
+               [--summary-file MD] [--baseline-label NAME]
+               [--current-label NAME]
 
   snip measure --self-test
 `
@@ -63,13 +73,17 @@ func runMeasure(argv []string) int {
 	pinRepeat := measure.PinRepeatDefault
 	pinTimeout := 600
 	var only, shard, output, bmfOutput, summaryFile, mergeFilesStr, pinBin, pinTool string
+	baselineLabel := "baseline"
+	currentLabel := "current"
 	var selfTest, pin bool
 
 	// Parse flags manually or with flagSpec; note that --merge can take multiple files.
-	// We extract --merge and --self-test first if present.
+	// We extract --merge, --compare, and --self-test first if present.
 	var remaining []string
 	var mergePaths []string
+	var comparePaths []string
 	isMerge := false
+	isCompare := false
 
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
@@ -81,6 +95,12 @@ func runMeasure(argv []string) int {
 				i++
 				mergePaths = append(mergePaths, argv[i])
 			}
+		} else if arg == "--compare" {
+			isCompare = true
+			for i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") {
+				i++
+				comparePaths = append(comparePaths, argv[i])
+			}
 		} else {
 			remaining = append(remaining, arg)
 		}
@@ -88,15 +108,17 @@ func runMeasure(argv []string) int {
 
 	_, err := parseFlags("measure", remaining, flagSpec{
 		Strs: map[string]*string{
-			"resources":    &resources,
-			"only":         &only,
-			"shard":        &shard,
-			"output":       &output,
-			"bmf-output":   &bmfOutput,
-			"summary-file": &summaryFile,
-			"merge":        &mergeFilesStr,
-			"pin-bin":      &pinBin,
-			"pin-tool":     &pinTool,
+			"resources":      &resources,
+			"only":           &only,
+			"shard":          &shard,
+			"output":         &output,
+			"bmf-output":     &bmfOutput,
+			"summary-file":   &summaryFile,
+			"merge":          &mergeFilesStr,
+			"pin-bin":        &pinBin,
+			"pin-tool":       &pinTool,
+			"baseline-label": &baselineLabel,
+			"current-label":  &currentLabel,
 		},
 		Ints: map[string]*int{
 			"jobs":        &jobs,
@@ -165,6 +187,38 @@ func runMeasure(argv []string) int {
 			}
 		}
 		fmt.Printf("Merged %d reports: %d cases, %d benchmarks.\n", len(mergePaths), len(rep.Results), len(bmf))
+		return 0
+	}
+
+	if isCompare {
+		if len(comparePaths) != 2 {
+			fmt.Fprintln(os.Stderr, "snip measure: --compare needs exactly two reports: --compare BASELINE CURRENT")
+			return 2
+		}
+		baseRep, err := loadMeasureReport(comparePaths[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "snip measure compare: %v\n", err)
+			return 1
+		}
+		curRep, err := loadMeasureReport(comparePaths[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "snip measure compare: %v\n", err)
+			return 1
+		}
+		crep := measure.CompareReports(baseRep, curRep, baselineLabel, currentLabel)
+		if output != "" {
+			data, _ := json.MarshalIndent(crep, "", "  ")
+			if err := os.WriteFile(output, data, 0o666); err != nil {
+				fmt.Fprintf(os.Stderr, "write %s: %v\n", output, err)
+				return 1
+			}
+		}
+		if summaryFile != "" {
+			if err := measure.AppendCompareSummary(summaryFile, crep); err != nil {
+				fmt.Fprintf(os.Stderr, "append summary: %v\n", err)
+			}
+		}
+		fmt.Printf("Compared %s vs %s: %d snippets.\n", baselineLabel, currentLabel, len(crep.Results))
 		return 0
 	}
 
@@ -465,6 +519,18 @@ func runMeasure(argv []string) int {
 		return 1
 	}
 	return 0
+}
+
+func loadMeasureReport(path string) (*measure.Report, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var rep measure.Report
+	if err := json.Unmarshal(data, &rep); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return &rep, nil
 }
 
 func formatInt(n int64) string {

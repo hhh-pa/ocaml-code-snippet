@@ -4,9 +4,44 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestMeasureCaseCallgrindStats(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs cat")
+	}
+	dir := t.TempDir()
+	inp := filepath.Join(dir, "input.txt")
+	outp := filepath.Join(dir, "output.txt")
+	if err := os.WriteFile(inp, []byte("hello\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outp, []byte("hello\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := MeasureCaseCallgrind(false, []string{"cat"}, inp, outp, 1, 30)
+	if err != nil {
+		t.Fatalf("MeasureCaseCallgrind: %v", err)
+	}
+	if sum.Runs != 1 {
+		t.Fatalf("Runs = %d, want 1", sum.Runs)
+	}
+	if sum.WallS == nil {
+		t.Fatal("WallS is nil")
+	}
+	if sum.CpuS == nil {
+		t.Fatal("CpuS is nil, want real rusage CPU time")
+	}
+	if sum.MaxRSSKb == nil || sum.MaxRSSKb.Median <= 0 {
+		t.Fatalf("MaxRSSKb = %v, want real peak RSS", sum.MaxRSSKb)
+	}
+	if sum.Instructions != nil {
+		t.Fatalf("Instructions = %v, want nil without valgrind", sum.Instructions)
+	}
+}
 
 func TestParseCallgrindOutput(t *testing.T) {
 	cg := `
@@ -208,6 +243,103 @@ func TestBuildBMFPartialAlloc(t *testing.T) {
 	}
 	if bench.PinInstructions == nil || bench.PinInstructions.Value.(int64) != 12000 {
 		t.Fatalf("pin_instructions = %v, want 12000", bench.PinInstructions)
+	}
+}
+
+func med(v float64) *NumberSummary {
+	return &NumberSummary{Min: v, Median: v, Max: v}
+}
+
+func compareReportsFixture() (base, cur *Report) {
+	base = &Report{Results: []CaseResult{
+		{Label: "sort/x", Case: "tc0", Summary: &CaseSummary{
+			PinInstructions: med(1000), AllocatedBytes: med(500), CpuS: med(0.02)}},
+		{Label: "sort/x", Case: "tc1", Summary: &CaseSummary{
+			PinInstructions: med(1000), AllocatedBytes: med(500)}},
+		{Label: "old/only", Case: "tc0", Summary: &CaseSummary{
+			PinInstructions: med(100)}},
+	}}
+	cur = &Report{Results: []CaseResult{
+		{Label: "sort/x", Case: "tc0", Summary: &CaseSummary{
+			PinInstructions: med(1200), AllocatedBytes: med(500), CpuS: med(0.01)}},
+		{Label: "new/only", Case: "tc0", Summary: &CaseSummary{
+			PinInstructions: med(50)}},
+	}}
+	return base, cur
+}
+
+func TestCompareReports(t *testing.T) {
+	base, cur := compareReportsFixture()
+	rep := CompareReports(base, cur, "b1", "c1")
+	if rep.ToolVersion != ToolVersion {
+		t.Fatalf("tool_version = %d, want %d", rep.ToolVersion, ToolVersion)
+	}
+	if len(rep.Results) != 3 {
+		t.Fatalf("entries = %d, want 3", len(rep.Results))
+	}
+	byLabel := map[string]CompareEntry{}
+	for _, e := range rep.Results {
+		byLabel[e.Label] = e
+	}
+	x := byLabel["sort/x"]
+	if x.BaseCases != 2 || x.CurrentCases != 1 {
+		t.Fatalf("sort/x cases = %d/%d, want 2/1", x.BaseCases, x.CurrentCases)
+	}
+	pin := x.Metrics["pin_instructions"]
+	if pin.Base == nil || *pin.Base != 2000 || pin.Current == nil || *pin.Current != 1200 {
+		t.Fatalf("sort/x pin = %+v, want 2000 -> 1200", pin)
+	}
+	if pin.DeltaPct == nil || math.Abs(*pin.DeltaPct+40) > 1e-9 {
+		t.Fatalf("sort/x pin delta = %v, want -40", pin.DeltaPct)
+	}
+	alloc := x.Metrics["allocated_bytes"]
+	if alloc.Base == nil || *alloc.Base != 1000 || alloc.Current == nil || *alloc.Current != 500 {
+		t.Fatalf("sort/x alloc = %+v, want 1000 -> 500", alloc)
+	}
+	if _, ok := x.Metrics["instructions"]; ok {
+		t.Fatalf("sort/x must omit the absent instructions metric: %+v", x.Metrics)
+	}
+	old := byLabel["old/only"]
+	oldPin := old.Metrics["pin_instructions"]
+	if oldPin.Base == nil || *oldPin.Base != 100 || oldPin.Current != nil || oldPin.DeltaPct != nil {
+		t.Fatalf("old/only pin = %+v, want base-only", oldPin)
+	}
+	neu := byLabel["new/only"]
+	newPin := neu.Metrics["pin_instructions"]
+	if newPin.Base != nil || newPin.Current == nil || *newPin.Current != 50 {
+		t.Fatalf("new/only pin = %+v, want current-only", newPin)
+	}
+}
+
+func TestAppendCompareSummary(t *testing.T) {
+	base, cur := compareReportsFixture()
+	rep := CompareReports(base, cur, "b1", "c1")
+	path := filepath.Join(t.TempDir(), "compare.md")
+	if err := AppendCompareSummary(path, rep); err != nil {
+		t.Fatalf("AppendCompareSummary: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	out := string(data)
+	if !strings.Contains(out, "### Performance Comparison (OCaml): `b1` -> `c1`") {
+		t.Fatalf("header wrong:\n%s", out)
+	}
+	if strings.Contains(out, "Instructions (Ir)") {
+		t.Fatalf("absent metric must not get a column:\n%s", out)
+	}
+	if !strings.Contains(out, "| `sort/x` | 2,000 -> 1,200 (-40.00%) | 1,000 -> 500 (-50.00%) | 0.0200 -> 0.0100 (-50.00%) |") {
+		t.Fatalf("delta row wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "| `old/only` | 100 -> n/a | - | - |") {
+		t.Fatalf("base-only row wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "| `new/only` | n/a -> 50 | - | - |") {
+		t.Fatalf("current-only row wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "| **Total (3 snippets)** | **2,100 -> 1,250 (-40.48%)** |") {
+		t.Fatalf("total row wrong:\n%s", out)
 	}
 }
 

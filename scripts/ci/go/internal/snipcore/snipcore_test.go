@@ -2,6 +2,7 @@ package snipcore
 
 import (
 	"bytes"
+	"runtime"
 	"testing"
 )
 
@@ -28,6 +29,38 @@ func TestParseTestShard(t *testing.T) {
 	}
 	if _, _, err := ParseTestShard("5/4"); err == nil {
 		t.Fatalf("5/4: want error")
+	}
+}
+
+func TestRunStats(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("rusage unsupported on windows")
+	}
+	stdout, _, stats, err := RunStats([]string{"sh", "-c", "echo hi"}, nil, 30)
+	if err != nil {
+		t.Fatalf("RunStats: %v", err)
+	}
+	if string(bytes.TrimSpace(stdout)) != "hi" {
+		t.Fatalf("stdout = %q, want hi", stdout)
+	}
+	if stats.WallS < 0 {
+		t.Fatalf("wall = %v, want >= 0", stats.WallS)
+	}
+	if stats.CpuS < 0 {
+		t.Fatalf("cpu = %v, want >= 0", stats.CpuS)
+	}
+	if stats.MaxRSSKb <= 0 {
+		t.Fatalf("maxrss = %d KB, want > 0", stats.MaxRSSKb)
+	}
+}
+
+func TestRunStatsTimeout(t *testing.T) {
+	_, _, stats, err := RunStats([]string{"sh", "-c", "sleep 30"}, nil, 1)
+	if _, ok := err.(*TimeoutError); !ok {
+		t.Fatalf("err = %v, want TimeoutError", err)
+	}
+	if stats != (ProcStats{}) {
+		t.Fatalf("stats on timeout = %+v, want zero", stats)
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -21,8 +22,14 @@ Provides separate compilation and test execution phases with granular
 per-snippet compilation timing, compiler warning tracking, per-test
 execution timing, and comprehensive summaries.
 
+Each test execution records wall time plus wait4 rusage (CPU time,
+peak RSS) from that single run, so no second execution is needed to
+report resource usage. --stats-output dumps per-case stats as JSON;
+--summary-file appends a per-snippet Markdown table.
+
 Usage: snip test [--resources DIR] [--jobs N] [--timeout S] [--only SUBSTR]
                  [--shard I/N] [--compile-only] [--test-only] [--no-compile]
+                 [--stats-output JSON] [--summary-file MD]
 `
 
 type testTask struct {
@@ -48,19 +55,34 @@ type testResult struct {
 	err      string
 }
 
+// testCaseStats is one executed case plus its resource usage. CpuS
+// and MaxRSSKb come from wait4 rusage of the test process itself;
+// failed-before-run cases (compile errors, unreadable inputs) carry
+// zeros with Passed false.
+type testCaseStats struct {
+	Label    string  `json:"label"`
+	Case     string  `json:"case"`
+	Passed   bool    `json:"passed"`
+	WallS    float64 `json:"wall_s"`
+	CpuS     float64 `json:"cpu_s"`
+	MaxRSSKb int64   `json:"maxrss_kb"`
+}
+
 func runTest(argv []string) int {
 	root := snipcore.RepoRoot()
 	resources := filepath.Join(root, "tests", "resources")
 	jobs := 4
 	timeout := 120
-	var only, shard string
+	var only, shard, statsOutput, summaryFile string
 	var compileOnly, testOnly, noCompile bool
 
 	_, err := parseFlags("test", argv, flagSpec{
 		Strs: map[string]*string{
-			"resources": &resources,
-			"only":      &only,
-			"shard":     &shard,
+			"resources":    &resources,
+			"only":         &only,
+			"shard":        &shard,
+			"stats-output": &statsOutput,
+			"summary-file": &summaryFile,
 		},
 		Ints: map[string]*int{
 			"jobs":    &jobs,
@@ -273,7 +295,7 @@ func runTest(argv []string) int {
 				len(neededScripts)-len(compileFailures), tCompWall, sumCompTime, avgComp)
 			fmt.Printf("Compile errors : %d\n", len(compileFailures))
 			fmt.Printf("Snippets w/warn: %d\n", len(compileWarnings))
-			fmt.Println("===========================\n")
+			fmt.Println("===========================")
 
 			if len(compileFailures) > 0 && compileOnly {
 				return 1
@@ -301,6 +323,7 @@ func runTest(argv []string) int {
 	passed := 0
 	done := 0
 	var testTimings []float64
+	var caseStats []testCaseStats
 
 	sem := make(chan struct{}, jobs)
 	var wg sync.WaitGroup
@@ -310,6 +333,7 @@ func runTest(argv []string) int {
 		if failErr, failedComp := compileFailures[t.script]; failedComp {
 			failures = append(failures, fmt.Sprintf("%s/%s: %s", t.label, t.caseName, failErr))
 			fmt.Printf("FAIL %s/%s: %s\n", t.label, t.caseName, failErr)
+			caseStats = append(caseStats, testCaseStats{Label: t.label, Case: t.caseName})
 			done++
 			continue
 		}
@@ -334,6 +358,7 @@ func runTest(argv []string) int {
 				done++
 				failures = append(failures, fmt.Sprintf("%s/%s: read input: %v", tk.label, tk.caseName, readErr))
 				fmt.Printf("FAIL %s/%s: read input: %v\n", tk.label, tk.caseName, readErr)
+				caseStats = append(caseStats, testCaseStats{Label: tk.label, Case: tk.caseName})
 				mu.Unlock()
 				return
 			}
@@ -344,14 +369,14 @@ func runTest(argv []string) int {
 				done++
 				failures = append(failures, fmt.Sprintf("%s/%s: read output: %v", tk.label, tk.caseName, readErr))
 				fmt.Printf("FAIL %s/%s: read output: %v\n", tk.label, tk.caseName, readErr)
+				caseStats = append(caseStats, testCaseStats{Label: tk.label, Case: tk.caseName})
 				mu.Unlock()
 				return
 			}
 			expected := snipcore.Normalize(outpBytes)
 
-			t0 := time.Now()
-			stdout, stderr, runErr := snipcore.Run(runCmd, inpBytes, timeout)
-			elapsed := time.Since(t0).Seconds()
+			stdout, stderr, procStat, runErr := snipcore.RunStats(runCmd, inpBytes, timeout)
+			elapsed := procStat.WallS
 
 			var caseErr string
 			if runErr != nil {
@@ -384,6 +409,14 @@ func runTest(argv []string) int {
 			mu.Lock()
 			done++
 			testTimings = append(testTimings, elapsed)
+			caseStats = append(caseStats, testCaseStats{
+				Label:    tk.label,
+				Case:     tk.caseName,
+				Passed:   caseErr == "",
+				WallS:    elapsed,
+				CpuS:     procStat.CpuS,
+				MaxRSSKb: procStat.MaxRSSKb,
+			})
 			if caseErr == "" {
 				passed++
 				fmt.Printf("PASS %s/%s in %.3fs [%d/%d]\n", tk.label, tk.caseName, elapsed, done, totalCases)
@@ -410,17 +443,158 @@ func runTest(argv []string) int {
 		failures = append(failures, fmt.Sprintf("%s: no resources found", label))
 	}
 
+	sort.Slice(caseStats, func(i, j int) bool {
+		if caseStats[i].Label != caseStats[j].Label {
+			return caseStats[i].Label < caseStats[j].Label
+		}
+		return caseStats[i].Case < caseStats[j].Case
+	})
+	if statsOutput != "" {
+		if err := writeTestStatsJSON(statsOutput, caseStats); err != nil {
+			fmt.Fprintf(os.Stderr, "write %s: %v\n", statsOutput, err)
+		}
+	}
+	if summaryFile != "" {
+		if err := appendTestStatsSummary(summaryFile, shardStr, caseStats); err != nil {
+			fmt.Fprintf(os.Stderr, "append summary: %v\n", err)
+		}
+	}
+
+	var sumCPU float64
+	var peakRSS int64
+	var peakCase string
+	for _, s := range caseStats {
+		sumCPU += s.CpuS
+		if s.MaxRSSKb > peakRSS {
+			peakRSS = s.MaxRSSKb
+			peakCase = s.Label + "/" + s.Case
+		}
+	}
+	avgCPU := 0.0
+	if len(caseStats) > 0 {
+		avgCPU = sumCPU / float64(len(caseStats))
+	}
+
 	fmt.Println("\n=== Test Execution Summary ===")
 	fmt.Printf("Total test cases : %d\n", totalCases)
 	fmt.Printf("Passed           : %d in %.2fs wall time (sum %.2fs, avg %.4fs/test)\n",
 		passed, tTestWall, sumTestTime, avgTest)
 	fmt.Printf("Failed           : %d\n", len(failures))
 	fmt.Printf("Missing resources: %d\n", len(missing))
+	fmt.Printf("Total CPU time   : %.2fs (avg %.4fs/test)\n", sumCPU, avgCPU)
+	if peakCase != "" {
+		fmt.Printf("Peak RSS         : %d KB (%s)\n", peakRSS, peakCase)
+	}
+	printTopCases(caseStats)
 
 	if len(failures) > 0 {
 		return 1
 	}
 	return 0
+}
+
+// printTopCases lists the slowest and hungriest executed cases.
+func printTopCases(stats []testCaseStats) {
+	byCPU := make([]testCaseStats, 0, len(stats))
+	byRSS := make([]testCaseStats, 0, len(stats))
+	for _, s := range stats {
+		if s.CpuS > 0 {
+			byCPU = append(byCPU, s)
+		}
+		if s.MaxRSSKb > 0 {
+			byRSS = append(byRSS, s)
+		}
+	}
+	sort.Slice(byCPU, func(i, j int) bool { return byCPU[i].CpuS > byCPU[j].CpuS })
+	sort.Slice(byRSS, func(i, j int) bool { return byRSS[i].MaxRSSKb > byRSS[j].MaxRSSKb })
+	if len(byCPU) > 0 {
+		fmt.Println("\nSlowest cases by CPU:")
+		for i, s := range byCPU {
+			if i >= 10 {
+				break
+			}
+			fmt.Printf("  %.4fs  %s/%s\n", s.CpuS, s.Label, s.Case)
+		}
+	}
+	if len(byRSS) > 0 {
+		fmt.Println("\nTop cases by peak RSS:")
+		for i, s := range byRSS {
+			if i >= 10 {
+				break
+			}
+			fmt.Printf("  %d KB  %s/%s\n", s.MaxRSSKb, s.Label, s.Case)
+		}
+	}
+}
+
+// writeTestStatsJSON dumps per-case stats sorted by label and case.
+func writeTestStatsJSON(path string, stats []testCaseStats) error {
+	if stats == nil {
+		stats = []testCaseStats{}
+	}
+	data, err := json.MarshalIndent(stats, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o666)
+}
+
+// appendTestStatsSummary appends a per-snippet CPU/RSS Markdown table.
+func appendTestStatsSummary(path, shardSuffix string, stats []testCaseStats) error {
+	if path == "" {
+		return nil
+	}
+	snippets := map[string][]testCaseStats{}
+	for _, s := range stats {
+		snippets[s.Label] = append(snippets[s.Label], s)
+	}
+	var names []string
+	for name := range snippets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	title := "### Test Resource Stats (OCaml)"
+	if shardSuffix != "" {
+		title += " [" + strings.Trim(shardSuffix, " []") + "]"
+	}
+	lines := []string{
+		title,
+		"",
+		"| Benchmark | Cases | CPU Time (s) | Max RSS (KB) |",
+		"| :--- | :---: | :---: | :---: |",
+	}
+	var totalCases int
+	var totalCPU float64
+	var totalPeak int64
+	for _, name := range names {
+		items := snippets[name]
+		var cpu float64
+		var peak int64
+		for _, s := range items {
+			cpu += s.CpuS
+			if s.MaxRSSKb > peak {
+				peak = s.MaxRSSKb
+			}
+		}
+		totalCases += len(items)
+		totalCPU += cpu
+		if peak > totalPeak {
+			totalPeak = peak
+		}
+		lines = append(lines, fmt.Sprintf("| `%s` | %d | %.4f | %d |", name, len(items), cpu, peak))
+	}
+	lines = append(lines, fmt.Sprintf("| **Total (%d snippets)** | %d | **%.4f** | **%d** |",
+		len(names), totalCases, totalCPU, totalPeak))
+	lines = append(lines, "")
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(strings.Join(lines, "\n") + "\n")
+	return err
 }
 
 func fileExists(path string) bool {

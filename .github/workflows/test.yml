@@ -5,6 +5,18 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
+    inputs:
+      instrument:
+        description: 'Instrumentation backend (none = tests only)'
+        required: false
+        default: 'none'
+        type: choice
+        options: [none, pin, callgrind]
+      only:
+        description: 'Perf runs only: restrict to snippets whose label contains this'
+        required: false
+        default: ''
+        type: string
 
 # Test data (recipes superproject resource/shared) ships as an encrypted
 # bundle, tests/resources.tar.xz.asc (tar.xz, AES-256, ASCII-armored).
@@ -13,9 +25,21 @@ on:
 # identical bundles). To rotate: run `snip bundle` with a fresh
 # passphrase, set the organization secret to the same value, and
 # rebuild the sibling bundles too (see `snip bundle --help`).
+#
+# Modes:
+# - Default (push, pull_request, dispatch with instrument=none): run
+#   the test suite once; each execution records CPU time and peak RSS
+#   from wait4 rusage, dumped as JSON artifacts plus a step-summary
+#   table. No second execution, no instrumentation.
+# - On-demand (dispatch with instrument=pin|callgrind): skip the test
+#   run (`snip measure` gates correctness on stdout itself) and measure
+#   the checkout plus a baseline checkout with the chosen backend, then
+#   report the delta. Baseline is automatic: the PR base when the
+#   dispatched branch has an open PR, else the previous commit (HEAD~1).
 
 jobs:
   test-shard:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.instrument == 'none' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -54,10 +78,19 @@ jobs:
         run: '"$GITHUB_WORKSPACE/snip-bin/snip" test --resources tests/resources --jobs 4 --shard ${{ matrix.shard }}/4 --compile-only'
 
       - name: Run OCaml tests
-        run: '"$GITHUB_WORKSPACE/snip-bin/snip" test --resources tests/resources --jobs 4 --timeout 300 --shard ${{ matrix.shard }}/4 --test-only'
+        run: '"$GITHUB_WORKSPACE/snip-bin/snip" test --resources tests/resources --jobs 4 --timeout 300 --shard ${{ matrix.shard }}/4 --test-only --stats-output test-stats.json --summary-file "$GITHUB_STEP_SUMMARY"'
+
+      - name: Upload test stats
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-stats-shard-${{ matrix.shard }}
+          path: test-stats.json
 
   # Aggregator: branch policy requires a check literally named "test",
   # which the sharded matrix above no longer produces on its own.
+  # test-shard is skipped only on instrumented manual runs, where
+  # `snip measure` gates correctness on stdout itself.
   test:
     needs: test-shard
     if: always()
@@ -65,10 +98,16 @@ jobs:
     steps:
       - name: Require all shards green
         run: |
-          if [ "${{ needs.test-shard.result }}" = "success" ]; then exit 0; else exit 1; fi
+          result="${{ needs.test-shard.result }}"
+          if [ "$result" = "success" ] || [ "$result" = "skipped" ]; then exit 0; else exit 1; fi
 
+  # On-demand instrumentation: manual dispatch with instrument=pin
+  # (Pin inscount + allocated bytes, --repeat 0) or
+  # instrument=callgrind (Callgrind Ir + CPU time + peak RSS,
+  # --repeat 1). Measures the checkout plus a baseline worktree.
   perf-instrumentation:
     needs: test
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.instrument != 'none' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -78,9 +117,11 @@ jobs:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3]
-    name: perf-instrumentation (shard ${{ matrix.shard }}/4)
+    name: perf-${{ inputs.instrument }} (shard ${{ matrix.shard }}/4)
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/profile-runner
         with:
           cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
@@ -91,7 +132,7 @@ jobs:
       - name: Install OCaml
         uses: awalsh128/cache-apt-pkgs-action@v1.6.3
         with:
-          packages: ocaml ocaml-native-compilers
+          packages: ocaml ocaml-native-compilers ${{ inputs.instrument == 'callgrind' && 'valgrind' || '' }}
           version: 1.0
 
       - name: Decrypt and extract resources
@@ -107,23 +148,95 @@ jobs:
             --passphrase "$RESOURCES_PASSPHRASE" \
             -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
 
+      - name: Resolve baseline commit
+        id: baseline
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch="${{ github.ref_name }}"
+          pr_base="$(gh pr list --head "$branch" --state open --json baseRefOid --limit 1 --jq '.[0].baseRefOid // empty')"
+          if [ -n "$pr_base" ]; then
+            base="$pr_base"
+            echo "PR context: branch $branch has an open PR; baseline is PR base $base"
+          else
+            base="$(git rev-parse HEAD~1)"
+            echo "Non-PR context: baseline is previous commit $base"
+          fi
+          git fetch --no-tags origin "$base" 2>/dev/null || true
+          git worktree add --detach /tmp/snip-baseline "$base"
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+
+      - name: Record baseline SHA
+        run: echo "${{ steps.baseline.outputs.sha }}" > baseline-sha.txt
+
       - name: Restore Pin kit and inscount tool
+        if: ${{ inputs.instrument == 'pin' }}
         uses: actions/cache@v5
         with:
           path: ~/instrumentation
           key: pin-4.4-${{ runner.os }}-${{ hashFiles('scripts/ci/setup-instrumentation.sh', 'scripts/ci/instrumentation/**') }}
 
       - name: Provision Intel Pin 4.4 and build inscount tool
+        if: ${{ inputs.instrument == 'pin' }}
         run: scripts/ci/setup-instrumentation.sh
 
       - name: "Measure performance (Pin-only: instructions + allocated bytes)"
+        if: ${{ inputs.instrument == 'pin' }}
         run: |
           "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
             --repeat 0 --jobs 2 --timeout 300 \
             --shard ${{ matrix.shard }}/4 \
+            --only "${{ inputs.only }}" \
             --pin --pin-bin "$INSTRUMENTATION_BIN" --pin-tool "$INSTRUMENTATION_TOOL" \
             --output perf-results.json --bmf-output bencher-bmf.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: "Measure performance (Callgrind: Ir + CPU time + peak RSS)"
+        if: ${{ inputs.instrument == 'callgrind' }}
+        run: |
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
+            --repeat 1 --jobs 2 --timeout 300 \
+            --shard ${{ matrix.shard }}/4 \
+            --only "${{ inputs.only }}" \
+            --output perf-results.json --bmf-output bencher-bmf.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Measure baseline (Pin-only)
+        if: ${{ inputs.instrument == 'pin' }}
+        working-directory: /tmp/snip-baseline
+        run: |
+          set +e
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources "$GITHUB_WORKSPACE/tests/resources" \
+            --repeat 0 --jobs 2 --timeout 300 \
+            --shard ${{ matrix.shard }}/4 \
+            --only "${{ inputs.only }}" \
+            --pin --pin-bin "$INSTRUMENTATION_BIN" --pin-tool "$INSTRUMENTATION_TOOL" \
+            --output "$GITHUB_WORKSPACE/perf-baseline.json" --bmf-output "$GITHUB_WORKSPACE/bencher-baseline.json"
+          code=$?
+          set -e
+          if [ ! -f "$GITHUB_WORKSPACE/perf-baseline.json" ]; then
+            echo "baseline produced no report" >&2
+            exit 1
+          fi
+          echo "baseline measure exit=$code (case failures tolerated for comparison)"
+
+      - name: Measure baseline (Callgrind)
+        if: ${{ inputs.instrument == 'callgrind' }}
+        working-directory: /tmp/snip-baseline
+        run: |
+          set +e
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources "$GITHUB_WORKSPACE/tests/resources" \
+            --repeat 1 --jobs 2 --timeout 300 \
+            --shard ${{ matrix.shard }}/4 \
+            --only "${{ inputs.only }}" \
+            --output "$GITHUB_WORKSPACE/perf-baseline.json" --bmf-output "$GITHUB_WORKSPACE/bencher-baseline.json"
+          code=$?
+          set -e
+          if [ ! -f "$GITHUB_WORKSPACE/perf-baseline.json" ]; then
+            echo "baseline produced no report" >&2
+            exit 1
+          fi
+          echo "baseline measure exit=$code (case failures tolerated for comparison)"
 
       - name: Install Bencher CLI
         if: env.BENCHER_API_KEY != ''
@@ -155,7 +268,7 @@ jobs:
               --key '${{ secrets.BENCHER_API_KEY }}' \
               --branch "${{ github.ref_name }}" \
               --testbed ubuntu-latest-ocaml \
-              --threshold-measure pin_instructions \
+              --threshold-measure ${{ inputs.instrument == 'pin' && 'pin_instructions' || 'instructions' }} \
               --threshold-test percentage \
               --threshold-min-sample-size 10 \
               --threshold-max-sample-size 64 \
@@ -173,9 +286,13 @@ jobs:
           path: |
             perf-results.json
             bencher-bmf.json
+            perf-baseline.json
+            bencher-baseline.json
+            baseline-sha.txt
 
   report-instrumentation:
     needs: perf-instrumentation
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.instrument != 'none' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -205,6 +322,22 @@ jobs:
           jq -s 'add' perf-results-*/bencher-bmf.json > bencher-bmf-jq.json
           diff <(jq -S . bencher-bmf-merged.json) <(jq -S . bencher-bmf-jq.json)
 
+      - name: Merge baseline reports
+        run: |
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure --merge perf-results-*/perf-baseline.json \
+            --output perf-baseline-merged.json \
+            --bmf-output bencher-baseline-merged.json
+
+      - name: Compare baseline vs current
+        run: |
+          BASE_SHA="$(cat perf-results-shard-0/baseline-sha.txt)"
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure \
+            --compare perf-baseline-merged.json perf-results-merged.json \
+            --baseline-label "${BASE_SHA:0:7}" \
+            --current-label "$(git rev-parse --short HEAD)" \
+            --output perf-compare.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
       - name: Upload merged results
         if: always()
         uses: actions/upload-artifact@v7
@@ -213,3 +346,6 @@ jobs:
           path: |
             perf-results-merged.json
             bencher-bmf-merged.json
+            perf-baseline-merged.json
+            bencher-baseline-merged.json
+            perf-compare.json
