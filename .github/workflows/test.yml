@@ -227,7 +227,7 @@ jobs:
         run: |
           common=(--resources tests/resources
             --repeat 1 --jobs 2 --timeout 300
-            --shard ${{ matrix.shard }}/4)
+            --shard ${{ matrix.shard }}/8)
           if [ "${{ inputs.instrument }}" = "callgrind" ] || [ "${{ inputs.instrument }}" = "both" ]; then
             common+=(--callgrind)
           fi
@@ -252,7 +252,7 @@ jobs:
           SNIP="$GITHUB_WORKSPACE/snip-bin/snip"
           OUT="$GITHUB_WORKSPACE"
           RES="$GITHUB_WORKSPACE/tests/resources"
-          SHARD="${{ matrix.shard }}/4"
+          SHARD="${{ matrix.shard }}/8"
           extra=()
           if [ "${{ inputs.instrument }}" = "callgrind" ] || [ "${{ inputs.instrument }}" = "both" ]; then
             extra+=(--callgrind)
