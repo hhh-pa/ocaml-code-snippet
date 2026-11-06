@@ -98,11 +98,14 @@ jobs:
   # Aggregator: branch policy requires a check literally named "test",
   # which the sharded matrix above no longer produces on its own.
   # test-shard is skipped only on instrumented manual runs, where
-  # `snip measure` gates correctness on stdout itself.
-  test:
+  # `snip measure` gates correctness on stdout itself. The id is
+  # test-gate (with display name test) so no needs: entry can
+  # resolve ambiguously against the test-shard prefix.
+  test-gate:
     needs: test-shard
     if: always()
     runs-on: ubuntu-latest
+    name: test
     steps:
       - name: TEMP debug dispatch inputs
         run: |
@@ -117,8 +120,8 @@ jobs:
   # instrument=callgrind (Callgrind Ir + CPU time + peak RSS,
   # --repeat 1). Measures the checkout plus a baseline worktree.
   perf-instrumentation:
-    needs: test
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: test-gate
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.instrument != 'none' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
