@@ -17,6 +17,11 @@ on:
         required: false
         default: ''
         type: string
+      compare:
+        description: 'Perf runs only: also measure the baseline and report the delta'
+        required: false
+        default: true
+        type: boolean
 
 # A newer run supersedes an older in-progress one to save resources:
 # CI runs (push/PR) cancel each other per branch, and manual perf
@@ -44,6 +49,8 @@ concurrency:
 #   the checkout plus a baseline checkout with the chosen backend, then
 #   report the delta. Baseline is automatic: the PR base when the
 #   dispatched branch has an open PR, else the previous commit (HEAD~1).
+#   Set compare=false for a faster single-sided run without the
+#   baseline and delta.
 
 jobs:
   test-shard:
@@ -165,6 +172,7 @@ jobs:
 
       - name: Resolve baseline commit
         id: baseline
+        if: ${{ inputs.compare }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -182,6 +190,7 @@ jobs:
           echo "sha=$base" >> "$GITHUB_OUTPUT"
 
       - name: Record baseline SHA
+        if: ${{ inputs.compare }}
         run: echo "${{ steps.baseline.outputs.sha }}" > baseline-sha.txt
 
       - name: Restore Pin kit and inscount tool
@@ -217,7 +226,7 @@ jobs:
             --summary-file "$GITHUB_STEP_SUMMARY"
 
       - name: Measure baseline (Pin-only)
-        if: ${{ inputs.instrument == 'pin' }}
+        if: ${{ inputs.instrument == 'pin' && inputs.compare }}
         working-directory: /tmp/snip-baseline
         run: |
           set +e
@@ -236,7 +245,7 @@ jobs:
           echo "baseline measure exit=$code (case failures tolerated for comparison)"
 
       - name: Measure baseline (Callgrind)
-        if: ${{ inputs.instrument == 'callgrind' }}
+        if: ${{ inputs.instrument == 'callgrind' && inputs.compare }}
         working-directory: /tmp/snip-baseline
         run: |
           set +e
@@ -339,12 +348,14 @@ jobs:
           diff <(jq -S . bencher-bmf-merged.json) <(jq -S . bencher-bmf-jq.json)
 
       - name: Merge baseline reports
+        if: ${{ inputs.compare }}
         run: |
           "$GITHUB_WORKSPACE/snip-bin/snip" measure --merge perf-results-*/perf-baseline.json \
             --output perf-baseline-merged.json \
             --bmf-output bencher-baseline-merged.json
 
       - name: Compare baseline vs current
+        if: ${{ inputs.compare }}
         run: |
           BASE_SHA="$(cat perf-results-shard-0/baseline-sha.txt)"
           "$GITHUB_WORKSPACE/snip-bin/snip" measure \

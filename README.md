@@ -36,7 +36,7 @@ snip test --resources tests/resources --jobs 4 --timeout 300
 
 By default (push, PR, or dispatch with `instrument=none`) CI runs the test suite once: each execution records CPU time and peak RSS from wait4 rusage, dumped per shard as a `test-stats-shard-*` JSON artifact plus a step-summary table. No second execution, no instrumentation.
 
-Manual dispatch offers two inputs: `instrument` (`none`, `pin`, `callgrind`) and `only` (restrict perf runs to matching snippet labels). With `instrument=pin|callgrind` the test run is skipped — `snip measure` gates correctness on stdout itself — and the `perf-instrumentation` job measures the checkout plus a baseline checkout, reporting the delta. The baseline is automatic: the PR base when the dispatched branch has an open PR, otherwise the previous commit (`HEAD~1`).
+Manual dispatch offers three inputs: `instrument` (`none`, `pin`, `callgrind`), `only` (restrict perf runs to matching snippet labels), and `compare` (default true). With `instrument=pin|callgrind` the test run is skipped — `snip measure` gates correctness on stdout itself — and the `perf-instrumentation` job measures the checkout plus a baseline checkout, reporting the delta. The baseline is automatic: the PR base when the dispatched branch has an open PR, otherwise the previous commit (`HEAD~1`). Set `compare=false` for a faster single-sided run without the baseline and delta.
 
 To test locally, decrypt the bundle into `tests/resources/` (passphrase holders only) and run the same command:
 
