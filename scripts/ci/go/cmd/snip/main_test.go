@@ -222,8 +222,12 @@ func TestSnipMeasureMissingShardScoped(t *testing.T) {
 func TestSnipTestMissingShardScoped(t *testing.T) {
 	bin := cmdtest.Build(t, ".")
 	dir := missingFixture(t)
+	// Empty PATH forces the no-toolchain warning (the CI condition:
+	// zero tasks need no toolchain), so the stderr-tolerant runner
+	// is required; assertions read stdout only.
+	noToolchain := []string{"PATH=" + t.TempDir()}
 	for _, shard := range []string{"0/2", "1/2"} {
-		out, code := cmdtest.Run(t, bin, dir, "test",
+		out, _, code := cmdtest.RunBothEnv(t, bin, dir, noToolchain, "test",
 			"--resources", "tests/resources", "--shard", shard)
 		if code != 1 {
 			t.Fatalf("shard %s: exit = %d, want 1", shard, code)
