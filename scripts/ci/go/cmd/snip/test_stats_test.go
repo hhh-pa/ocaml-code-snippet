@@ -45,7 +45,7 @@ func TestWriteTestStatsJSON(t *testing.T) {
 
 func TestAppendTestStatsSummary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "summary.md")
-	if err := appendTestStatsSummary(path, " [shard 1/4]", sampleTestStats()); err != nil {
+	if err := appendTestStatsSummary(path, " [shard 0/4]", sampleTestStats()); err != nil {
 		t.Fatalf("appendTestStatsSummary: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -53,7 +53,7 @@ func TestAppendTestStatsSummary(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 	out := string(data)
-	if !strings.Contains(out, "### Test Resource Stats (OCaml) [shard 1/4]") {
+	if !strings.Contains(out, "### Test Resource Stats (OCaml) [shard 0/4]") {
 		t.Fatalf("title lacks shard suffix:\n%s", out)
 	}
 	if !strings.Contains(out, "| `sort/bubble_sort` | 2 | 0.0500 | 2000 |") {

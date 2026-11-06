@@ -297,36 +297,14 @@ func runMeasure(argv []string) int {
 		return tasks[i].caseName < tasks[j].caseName
 	})
 
-	// Shard by snippet label (cohesive sharding)
+	// Shard by snippet label (cohesive sharding, shared with snip test)
 	if shard != "" {
-		k, n, err := snipcore.ParseMeasureShard(shard)
+		k, n, err := snipcore.ParseShard(shard)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		groups := map[string][]measureTask{}
-		for _, t := range tasks {
-			groups[t.label] = append(groups[t.label], t)
-		}
-		var groupNames []string
-		for name := range groups {
-			groupNames = append(groupNames, name)
-		}
-		sort.Strings(groupNames)
-
-		keep := map[string]bool{}
-		for i, name := range groupNames {
-			if i%n == k {
-				keep[name] = true
-			}
-		}
-		var sharded []measureTask
-		for _, t := range tasks {
-			if keep[t.label] {
-				sharded = append(sharded, t)
-			}
-		}
-		tasks = sharded
+		tasks = snipcore.FilterShard(tasks, func(t measureTask) string { return t.label }, k, n)
 	}
 
 	totalTasks := len(tasks)

@@ -25,10 +25,11 @@ execution timing, and comprehensive summaries.
 Each test execution records wall time plus wait4 rusage (CPU time,
 peak RSS) from that single run, so no second execution is needed to
 report resource usage. --stats-output dumps per-case stats as JSON;
---summary-file appends a per-snippet Markdown table.
+--summary-file appends a per-snippet Markdown table. --shard K/N keeps
+whole snippets (cohesive, 0-based), the same split snip measure uses.
 
 Usage: snip test [--resources DIR] [--jobs N] [--timeout S] [--only SUBSTR]
-                 [--shard I/N] [--compile-only] [--test-only] [--no-compile]
+                 [--shard K/N] [--compile-only] [--test-only] [--no-compile]
                  [--stats-output JSON] [--summary-file MD]
 `
 
@@ -106,7 +107,7 @@ func runTest(argv []string) int {
 	shardIndex, shardTotal := 0, 1
 	if shard != "" {
 		var shardErr error
-		shardIndex, shardTotal, shardErr = snipcore.ParseTestShard(shard)
+		shardIndex, shardTotal, shardErr = snipcore.ParseShard(shard)
 		if shardErr != nil {
 			fmt.Fprintln(os.Stderr, shardErr)
 			return 1
@@ -160,14 +161,8 @@ func runTest(argv []string) int {
 		return tasks[i].caseName < tasks[j].caseName
 	})
 
-	if shardTotal > 1 {
-		var sharded []testTask
-		for i, t := range tasks {
-			if i%shardTotal == shardIndex {
-				sharded = append(sharded, t)
-			}
-		}
-		tasks = sharded
+	if shard != "" {
+		tasks = snipcore.FilterShard(tasks, func(t testTask) string { return t.label }, shardIndex, shardTotal)
 	}
 
 	totalCases := len(tasks)
@@ -182,8 +177,8 @@ func runTest(argv []string) int {
 	sort.Strings(neededScripts)
 
 	shardStr := ""
-	if shardTotal > 1 {
-		shardStr = fmt.Sprintf(" [shard %d/%d]", shardIndex+1, shardTotal)
+	if shard != "" {
+		shardStr = fmt.Sprintf(" [shard %d/%d]", shardIndex, shardTotal)
 	}
 	fmt.Printf("OCaml suite%s: %d test cases across %d snippets\n", shardStr, totalCases, len(neededScripts))
 

@@ -3,6 +3,7 @@ package snipcore
 import (
 	"bytes"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -15,20 +16,48 @@ func TestNormalize(t *testing.T) {
 	}
 }
 
-func TestParseTestShard(t *testing.T) {
-	idx, tot, err := ParseTestShard("1/4")
+func TestParseShard(t *testing.T) {
+	idx, tot, err := ParseShard("0/4")
 	if err != nil || idx != 0 || tot != 4 {
-		t.Fatalf("1/4: got (%d, %d, %v)", idx, tot, err)
+		t.Fatalf("0/4: got (%d, %d, %v)", idx, tot, err)
 	}
-	idx, tot, err = ParseTestShard("4/4")
+	idx, tot, err = ParseShard("3/4")
 	if err != nil || idx != 3 || tot != 4 {
-		t.Fatalf("4/4: got (%d, %d, %v)", idx, tot, err)
+		t.Fatalf("3/4: got (%d, %d, %v)", idx, tot, err)
 	}
-	if _, _, err := ParseTestShard("0/4"); err == nil {
-		t.Fatalf("0/4: want error")
+	for _, bad := range []string{"4/4", "1/1", "0/0", "x", "1-4"} {
+		if _, _, err := ParseShard(bad); err == nil {
+			t.Fatalf("%s: want error", bad)
+		}
 	}
-	if _, _, err := ParseTestShard("5/4"); err == nil {
-		t.Fatalf("5/4: want error")
+}
+
+func TestFilterShard(t *testing.T) {
+	type item struct{ label, name string }
+	items := []item{
+		{"b", "b1"}, {"a", "a1"}, {"c", "c1"},
+		{"a", "a2"}, {"b", "b2"}, {"d", "d1"}, {"e", "e1"},
+	}
+	label := func(it item) string { return it.label }
+	names := func(got []item) string {
+		var out []string
+		for _, it := range got {
+			out = append(out, it.label+"/"+it.name)
+		}
+		return strings.Join(out, ",")
+	}
+	// Labels sort to a..e; shard 0/2 keeps a, c, e in input order.
+	if got := FilterShard(items, label, 0, 2); names(got) != "a/a1,c/c1,a/a2,e/e1" {
+		t.Fatalf("0/2: got %s", names(got))
+	}
+	if got := FilterShard(items, label, 1, 2); names(got) != "b/b1,b/b2,d/d1" {
+		t.Fatalf("1/2: got %s", names(got))
+	}
+	if got := FilterShard(items, label, 0, 1); len(got) != len(items) {
+		t.Fatalf("0/1: got %d items, want all %d", len(got), len(items))
+	}
+	if got := FilterShard(items, label, 0, 0); len(got) != len(items) {
+		t.Fatalf("total 0 must not filter, got %d items", len(got))
 	}
 }
 
@@ -61,19 +90,5 @@ func TestRunStatsTimeout(t *testing.T) {
 	}
 	if stats != (ProcStats{}) {
 		t.Fatalf("stats on timeout = %+v, want zero", stats)
-	}
-}
-
-func TestParseMeasureShard(t *testing.T) {
-	idx, tot, err := ParseMeasureShard("0/4")
-	if err != nil || idx != 0 || tot != 4 {
-		t.Fatalf("0/4: got (%d, %d, %v)", idx, tot, err)
-	}
-	idx, tot, err = ParseMeasureShard("3/4")
-	if err != nil || idx != 3 || tot != 4 {
-		t.Fatalf("3/4: got (%d, %d, %v)", idx, tot, err)
-	}
-	if _, _, err := ParseMeasureShard("4/4"); err == nil {
-		t.Fatalf("4/4: want error")
 	}
 }
