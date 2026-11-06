@@ -178,6 +178,8 @@ jobs:
       - name: Resolve comparison refs
         id: refs
         if: github.event_name == 'workflow_dispatch' && inputs.compare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ensure_present() {
             if ! git cat-file -e "$1" 2>/dev/null; then
@@ -221,14 +223,14 @@ jobs:
         # Instrumentation is opt-in per dispatch (`instrument`
         # input: callgrind and/or Pin add their phases per case;
         # the setup steps above fail loudly when an instrument is
-        # unusable, so no vacuous counts here). NOTE: no explicit
-        # callgrind flag — valgrind on PATH selects the callgrind
-        # phase, and CI installs valgrind exactly when instrument
-        # is callgrind or both.
+        # unusable, so no vacuous counts here).
         run: |
           common=(--resources tests/resources
             --repeat 1 --jobs 2 --timeout 300
             --shard ${{ matrix.shard }}/4)
+          if [ "${{ inputs.instrument }}" = "callgrind" ] || [ "${{ inputs.instrument }}" = "both" ]; then
+            common+=(--callgrind)
+          fi
           if [ "${{ inputs.instrument }}" = "pin" ] || [ "${{ inputs.instrument }}" = "both" ]; then
             common+=(--pin --pin-bin "${{ steps.pin.outputs.pin-bin }}"
               --pin-tool "${{ steps.pin.outputs.pin-tool }}"
@@ -252,6 +254,9 @@ jobs:
           RES="$GITHUB_WORKSPACE/tests/resources"
           SHARD="${{ matrix.shard }}/4"
           extra=()
+          if [ "${{ inputs.instrument }}" = "callgrind" ] || [ "${{ inputs.instrument }}" = "both" ]; then
+            extra+=(--callgrind)
+          fi
           if [ "${{ inputs.instrument }}" = "pin" ] || [ "${{ inputs.instrument }}" = "both" ]; then
             extra+=(--pin --pin-bin "${{ steps.pin.outputs.pin-bin }}"
               --pin-tool "${{ steps.pin.outputs.pin-tool }}"

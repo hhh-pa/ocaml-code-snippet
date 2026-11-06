@@ -21,11 +21,13 @@ import (
 const measureUsage = `Load-independent performance measurement for OCaml snippets.
 
 Compiles every src/**/*.ml script to a native binary using ocamlopt -O2,
-runs it against the shared test cases under Valgrind Callgrind, and records
-simulated instruction reads (Ir), CPU time and peak RSS from wait4 rusage,
-plus (under the pin flags) Pin instruction counts and allocated bytes
-from an inscount tool run. Under valgrind the CPU and RSS figures
-describe the valgrind process, tool overhead included.
+runs it against the shared test cases --repeat times, gating correctness
+on stdout, and records CPU time and peak RSS from wait4 rusage. With
+--callgrind the timed phase runs under Valgrind Callgrind and records
+simulated instruction reads (Ir) too (CPU/RSS then describe the valgrind
+process, tool overhead included); with the pin flags each case is also
+measured once under Pin, yielding instruction counts plus allocated bytes
+from an inscount tool run.
 
 --repeat 0 selects the pin-only mode: no timed phase runs, and each case
 is measured once under Pin, which yields pin_instructions together with
@@ -37,7 +39,7 @@ rather than emitting zeros.
 Usage:
   snip measure [--resources DIR] [--repeat N] [--jobs N] [--timeout S]
                [--only SUBSTR] [--shard K/N] [--output JSON]
-               [--bmf-output JSON] [--summary-file MD]
+               [--bmf-output JSON] [--summary-file MD] [--callgrind]
                [--pin] [--pin-bin BIN] [--pin-tool SO] [--pin-repeat N]
                [--pin-timeout S]
 
@@ -67,7 +69,7 @@ func runMeasure(argv []string) int {
 	pinRepeat := measure.PinRepeatDefault
 	pinTimeout := 600
 	var only, shard, output, bmfOutput, summaryFile, mergeFilesStr, pinBin, pinTool string
-	var selfTest, pin bool
+	var selfTest, pin, callgrind bool
 
 	// Parse flags manually or with flagSpec; note that --merge can take multiple files.
 	// We extract --merge and --self-test first if present.
@@ -112,6 +114,7 @@ func runMeasure(argv []string) int {
 		Bools: map[string]*bool{
 			"self-test": &selfTest,
 			"pin":       &pin,
+			"callgrind": &callgrind,
 		},
 	})
 	if err != nil {
@@ -173,9 +176,10 @@ func runMeasure(argv []string) int {
 	}
 
 	_, valgrindErr := exec.LookPath("valgrind")
-	hasValgrind := valgrindErr == nil
-	if !hasValgrind && repeat > 0 {
-		fmt.Fprintln(os.Stderr, "warning: valgrind not found in PATH; running binary directly without Callgrind simulation")
+	hasValgrind := callgrind && valgrindErr == nil
+	if callgrind && valgrindErr != nil {
+		fmt.Fprintln(os.Stderr, "snip measure: --callgrind needs valgrind on PATH")
+		return 1
 	}
 
 	usePin := pin && measure.PinUsable(pinBin, pinTool)

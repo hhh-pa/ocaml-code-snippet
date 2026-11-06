@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -74,6 +75,57 @@ func TestSnipCompare(t *testing.T) {
 	}
 	if !strings.Contains(string(md), "1,000 -> 1,500 (+50.00%)") {
 		t.Fatalf("summary lacks delta row:\n%s", md)
+	}
+}
+
+func TestSnipMeasureCallgrindNeedsValgrind(t *testing.T) {
+	bin := cmdtest.Build(t, ".")
+	dir := t.TempDir()
+	// Empty PATH guarantees no valgrind; the flag must fail loud
+	// instead of silently recording direct runs.
+	_, stderr, code := cmdtest.RunBothEnv(t, bin, dir,
+		[]string{"PATH=" + t.TempDir()}, "measure", "--repeat", "1", "--callgrind")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "--callgrind needs valgrind on PATH") {
+		t.Fatalf("stderr lacks loud failure:\n%s", stderr)
+	}
+}
+
+func TestSnipMeasureCallgrindRecordsIr(t *testing.T) {
+	if _, err := exec.LookPath("ocamlopt"); err != nil {
+		t.Skip("needs ocamlopt")
+	}
+	if _, err := exec.LookPath("valgrind"); err != nil {
+		t.Skip("needs valgrind")
+	}
+	bin := cmdtest.Build(t, ".")
+	dir := t.TempDir()
+	writeFile := func(path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(filepath.Join(dir, "src", "a", "b.ml"),
+		"let () = print_string (try input_line stdin with End_of_file -> \"\")\n")
+	writeFile(filepath.Join(dir, "res", "a", "b", "test_case_0", "input.txt"), "hi\n")
+	writeFile(filepath.Join(dir, "res", "a", "b", "test_case_0", "output.txt"), "hi\n")
+	_, _, code := cmdtest.RunBothEnv(t, bin, dir, nil, "measure",
+		"--resources", "res", "--repeat", "1", "--callgrind", "--bmf-output", "b.json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "b.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"instructions"`) {
+		t.Fatalf("bmf lacks Ir signal:\n%s", data)
 	}
 }
 
