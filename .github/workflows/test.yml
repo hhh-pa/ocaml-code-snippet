@@ -116,7 +116,7 @@ jobs:
       - name: Provision Intel Pin 4.4 and build inscount tool
         run: scripts/ci/setup-instrumentation.sh
 
-      - name: Measure performance (Pin-only: instructions + allocated bytes)
+      - name: "Measure performance (Pin-only: instructions + allocated bytes)"
         run: |
           "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
             --repeat 0 --jobs 2 --timeout 300 \
