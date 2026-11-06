@@ -107,9 +107,6 @@ jobs:
     runs-on: ubuntu-latest
     name: test
     steps:
-      - name: TEMP debug dispatch inputs
-        run: |
-          echo "event=${{ github.event_name }} instrument=[${{ inputs.instrument }}] only=[${{ inputs.only }}] ref=${{ github.ref }}"
       - name: Require all shards green
         run: |
           result="${{ needs.test-shard.result }}"
@@ -120,8 +117,11 @@ jobs:
   # instrument=callgrind (Callgrind Ir + CPU time + peak RSS,
   # --repeat 1). Measures the checkout plus a baseline worktree.
   perf-instrumentation:
-    # No needs:: this job runs only on instrumented dispatches, where the
-    # test jobs are always skipped, so there is nothing to wait for.
+    # No needs: here: this job runs only on instrumented dispatches, where
+    # the test jobs are always skipped, so there is nothing to wait for.
+    # (A needs: entry also breaks the job: GitHub skips jobs with needs:
+    # whenever any transitive upstream job was skipped, even through a
+    # successful always() aggregator and regardless of if:.)
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.instrument != 'none' }}
     runs-on: ubuntu-latest
     permissions:
