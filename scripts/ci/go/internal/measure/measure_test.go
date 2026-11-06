@@ -216,6 +216,46 @@ func TestBuildBMFPinOnly(t *testing.T) {
 	}
 }
 
+func TestMergeReportsHasValgrind(t *testing.T) {
+	write := func(dir, name string, hv bool) string {
+		t.Helper()
+		hvStr := "false"
+		if hv {
+			hvStr = "true"
+		}
+		path := filepath.Join(dir, name)
+		body := `{"tool_version":4,"has_valgrind":` + hvStr + `,"results":[],"failures":[]}`
+		if err := os.WriteFile(path, []byte(body), 0o666); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	dir := t.TempDir()
+	off := write(dir, "off.json", false)
+	on := write(dir, "on.json", true)
+	rep, _, err := MergeReports([]string{off, off})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.HasValgrind {
+		t.Fatal("all-direct merge must report has_valgrind false")
+	}
+	rep, _, err = MergeReports([]string{on, on})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.HasValgrind {
+		t.Fatal("all-callgrind merge must report has_valgrind true")
+	}
+	rep, _, err = MergeReports([]string{off, on})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.HasValgrind {
+		t.Fatal("mixed merge must report has_valgrind false")
+	}
+}
+
 func TestBuildBMFPartialAlloc(t *testing.T) {
 	results := []CaseResult{
 		{

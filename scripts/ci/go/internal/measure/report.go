@@ -93,6 +93,7 @@ func MergeReports(paths []string) (*Report, BMF, error) {
 	seen := map[string]bool{}
 	var pinUsed bool
 	var pinVersion *string
+	var hasValgrind bool
 	haveBase := false
 
 	sortedPaths := make([]string, len(paths))
@@ -110,7 +111,10 @@ func MergeReports(paths []string) (*Report, BMF, error) {
 		}
 		if !haveBase {
 			pinUsed, pinVersion = rep.PinUsed, rep.PinVersion
+			hasValgrind = rep.HasValgrind
 			haveBase = true
+		} else {
+			hasValgrind = hasValgrind && rep.HasValgrind
 		}
 		for _, item := range rep.Results {
 			key := item.Label + "/" + item.Case
@@ -133,7 +137,7 @@ func MergeReports(paths []string) (*Report, BMF, error) {
 		ToolVersion: ToolVersion,
 		Platform:    runtime.GOOS + "/" + runtime.GOARCH,
 		Date:        time.Now().UTC().Format(time.RFC3339),
-		HasValgrind: true,
+		HasValgrind: hasValgrind,
 		PinUsed:     pinUsed,
 		PinVersion:  pinVersion,
 		Results:     mergedResults,
