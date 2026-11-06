@@ -1,12 +1,16 @@
 #!/bin/bash
-# Provision Intel Pin 4.4 + the vendored inscount tool for
-# `snip measure --pin`.
+# Provision Intel Pin 4.4 + the vendored inscount tool for local
+# `snip measure --pin` runs.
 #
 # Idempotent: when INSTRUMENTATION_DIR already holds a kit and a
-# built tool (the workflow caches it across runs), it just
-# re-exports the paths. Otherwise it downloads the kit from
-# Intel, verifies its sha256, extracts it, and builds
+# built tool, it just re-exports the paths. Otherwise it downloads
+# the kit from Intel, verifies its sha256, extracts it, and builds
 # scripts/ci/instrumentation/inscount.cpp against it.
+#
+# CI does NOT use this script (it uses .github/actions/pin-tools,
+# which duplicates the PIN_URL/PIN_SHA256 below — bump both
+# together). Non-CI callers source the exported paths, e.g.:
+#   eval "$(scripts/ci/setup-instrumentation.sh)"
 #
 # Outputs (stdout for logs, $GITHUB_ENV when present):
 #   INSTRUMENTATION_BIN   absolute path to the pin launcher

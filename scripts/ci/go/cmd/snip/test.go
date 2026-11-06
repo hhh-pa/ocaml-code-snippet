@@ -434,7 +434,13 @@ func runTest(argv []string) int {
 		avgTest = sumTestTime / float64(len(testTimings))
 	}
 
-	for _, label := range missing {
+	// Missing labels are shard-scoped like tasks (same rule as
+	// snip measure), so sharded runs report no duplicates.
+	scopedMissing := missing
+	if shard != "" {
+		scopedMissing = snipcore.FilterShard(missing, func(s string) string { return s }, shardIndex, shardTotal)
+	}
+	for _, label := range scopedMissing {
 		failures = append(failures, fmt.Sprintf("%s: no resources found", label))
 	}
 
@@ -475,7 +481,7 @@ func runTest(argv []string) int {
 	fmt.Printf("Passed           : %d in %.2fs wall time (sum %.2fs, avg %.4fs/test)\n",
 		passed, tTestWall, sumTestTime, avgTest)
 	fmt.Printf("Failed           : %d\n", len(failures))
-	fmt.Printf("Missing resources: %d\n", len(missing))
+	fmt.Printf("Missing resources: %d\n", len(scopedMissing))
 	fmt.Printf("Total CPU time   : %.2fs (avg %.4fs/test)\n", sumCPU, avgCPU)
 	if peakCase != "" {
 		fmt.Printf("Peak RSS         : %d KB (%s)\n", peakRSS, peakCase)

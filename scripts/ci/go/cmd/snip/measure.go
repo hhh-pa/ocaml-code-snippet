@@ -184,7 +184,8 @@ func runMeasure(argv []string) int {
 
 	usePin := pin && measure.PinUsable(pinBin, pinTool)
 	if pin && !usePin {
-		fmt.Fprintln(os.Stderr, "warning: pin unavailable (need --pin-bin launcher and --pin-tool inscount .so); pin_instructions will be null")
+		fmt.Fprintln(os.Stderr, "snip measure: --pin needs a usable kit (--pin-bin launcher and --pin-tool inscount .so)")
+		return 1
 	}
 	var pinVersion *string
 	if usePin {
@@ -258,13 +259,15 @@ func runMeasure(argv []string) int {
 	})
 
 	// Shard by snippet label (cohesive sharding, shared with snip test)
+	shardIndex, shardTotal := 0, 1
 	if shard != "" {
-		k, n, err := snipcore.ParseShard(shard)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+		var shardErr error
+		shardIndex, shardTotal, shardErr = snipcore.ParseShard(shard)
+		if shardErr != nil {
+			fmt.Fprintln(os.Stderr, shardErr)
 			return 1
 		}
-		tasks = snipcore.FilterShard(tasks, func(t measureTask) string { return t.label }, k, n)
+		tasks = snipcore.FilterShard(tasks, func(t measureTask) string { return t.label }, shardIndex, shardTotal)
 	}
 
 	totalTasks := len(tasks)
@@ -351,7 +354,13 @@ func runMeasure(argv []string) int {
 
 	var results []measure.CaseResult
 	var failures []string
-	for _, label := range missing {
+	// Missing labels are shard-scoped like tasks: each shard reports
+	// only its own, so the merged failures list carries no duplicates.
+	scopedMissing := missing
+	if shard != "" {
+		scopedMissing = snipcore.FilterShard(missing, func(s string) string { return s }, shardIndex, shardTotal)
+	}
+	for _, label := range scopedMissing {
 		failures = append(failures, fmt.Sprintf("%s: no resources found", label))
 	}
 	done := 0

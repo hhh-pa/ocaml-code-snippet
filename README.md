@@ -58,7 +58,7 @@ See `snip bundle --help` for rotation instructions when using a fresh passphrase
 
 `--repeat 0` selects this pin-only mode: no timed phase runs, correctness is still gated on the Pin run's stdout, and reports carry `Runs: 0` with no time summaries (the BMF and summary table omit `cpu_time` rather than emitting zeros).
 
-CPU time and peak RSS come from the plain test run (single execution, no instrumentation). Under instrumentation the figures describe the tool process: Pin's footprint dominates RSS, and Callgrind inflates CPU — so pin-only reports carry no time/memory summaries, while Callgrind CPU/RSS include tool overhead.
+CPU time and peak RSS come from the timed sweep phase (single uninstrumented execution per case). Under instrumentation the figures describe the tool process: Pin's footprint dominates RSS, and Callgrind inflates CPU — so pin-only reports carry no time/memory summaries, while Callgrind CPU/RSS include tool overhead.
 
 ```sh
 scripts/ci/setup-instrumentation.sh  # one-time Pin 4.4 kit + tool provisioning

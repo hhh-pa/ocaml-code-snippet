@@ -6,10 +6,10 @@ type MeasureValue struct {
 }
 
 // Benchmark measures for one snippet. Instructions is the Callgrind Ir
-// total (local runs with valgrind installed; CI no longer
-// installs valgrind); PinInstructions is the Pin inscount total
-// CI tracks; AllocatedBytes is the Gc.allocated_bytes total from
-// the same Pin runs. CpuTime is omitted when no timed phase ran
+// total (--callgrind runs; CI dispatches install valgrind for
+// those); PinInstructions is the Pin inscount total (--pin runs)
+// and AllocatedBytes the Gc.allocated_bytes total from the same
+// Pin runs. CpuTime is omitted when no timed phase ran
 // (pin-only sweeps), so BMF never carries zero cpu_time rows.
 type Benchmark struct {
 	Instructions    *MeasureValue `json:"instructions,omitempty"`

@@ -48,7 +48,7 @@ const usage = `Usage: snip <subcommand> [flags]
 
 Subcommands:
   test      compile and run OCaml snippets against shared test cases
-  measure   load-independent performance measurement under Callgrind
+  measure   timed and instrumented performance measurement
   compare   compare two measure reports (from/to legs)
   bundle    build or rotate the encrypted test-resource bundle
   decrypt   decrypt and extract the test-resource bundle

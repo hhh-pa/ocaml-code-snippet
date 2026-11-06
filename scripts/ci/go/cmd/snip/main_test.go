@@ -154,3 +154,82 @@ func TestSnipMeasureMissingResources(t *testing.T) {
 		t.Fatalf("report lacks missing failure:\n%s", data)
 	}
 }
+
+func TestSnipMeasurePinNeedsKit(t *testing.T) {
+	bin := cmdtest.Build(t, ".")
+	dir := t.TempDir()
+	_, stderr, code := cmdtest.RunBothEnv(t, bin, dir, nil, "measure",
+		"--repeat", "1", "--pin",
+		"--pin-bin", "/nonexistent/pin", "--pin-tool", "/nonexistent/inscount.so")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "--pin needs a usable kit") {
+		t.Fatalf("stderr lacks loud failure:\n%s", stderr)
+	}
+}
+
+// missingFixture writes two resourceless scripts (labels a, b) with
+// an empty resources dir: no toolchain runs, so the CLI must fail
+// with exactly the missing-resource failures.
+func missingFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, stem := range []string{"a", "b"} {
+		if err := os.WriteFile(filepath.Join(dir, "src", stem+".ml"),
+			[]byte("let () = ()\n"), 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "tests", "resources"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestSnipMeasureMissingShardScoped(t *testing.T) {
+	bin := cmdtest.Build(t, ".")
+	dir := missingFixture(t)
+	// Labels sort to a, b: each shard must report only its own
+	// missing label, never the other shard's.
+	for _, tc := range []struct{ shard, want, avoid string }{
+		{"0/2", "a: no resources found", "b: no resources found"},
+		{"1/2", "b: no resources found", "a: no resources found"},
+	} {
+		out := "rep-" + strings.ReplaceAll(tc.shard, "/", "-") + ".json"
+		_, _, code := cmdtest.RunBothEnv(t, bin, dir, nil, "measure",
+			"--resources", "tests/resources", "--repeat", "1",
+			"--shard", tc.shard, "--output", out)
+		if code != 1 {
+			t.Fatalf("shard %s: exit = %d, want 1", tc.shard, code)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, out))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), tc.want) {
+			t.Fatalf("shard %s lacks %q:\n%s", tc.shard, tc.want, data)
+		}
+		if strings.Contains(string(data), tc.avoid) {
+			t.Fatalf("shard %s must not report the other shard's label:\n%s", tc.shard, data)
+		}
+	}
+}
+
+func TestSnipTestMissingShardScoped(t *testing.T) {
+	bin := cmdtest.Build(t, ".")
+	dir := missingFixture(t)
+	for _, shard := range []string{"0/2", "1/2"} {
+		out, code := cmdtest.Run(t, bin, dir, "test",
+			"--resources", "tests/resources", "--shard", shard)
+		if code != 1 {
+			t.Fatalf("shard %s: exit = %d, want 1", shard, code)
+		}
+		if !strings.Contains(out, "Missing resources: 1") {
+			t.Fatalf("shard %s lacks scoped count:\n%s", shard, out)
+		}
+	}
+}
