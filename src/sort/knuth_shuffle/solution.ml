@@ -8,7 +8,7 @@ let () =
     let n = Array.length arr in
     let state = ref (seed mod m) in
     for i = n - 1 downto 1 do
-      state := (!state * a_const + c_const) mod m;
+      state := ((!state * a_const) + c_const) mod m;
       let j = !state mod (i + 1) in
       let tmp = arr.(i) in
       arr.(i) <- arr.(j);
