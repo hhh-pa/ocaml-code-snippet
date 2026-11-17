@@ -18,9 +18,9 @@ let rabin_karp text pat =
       !acc
     in
     let ph = h pat 0 in
-    let th = ref (h text 0) in
     let found = ref false in
     let i = ref 0 in
+    let th = ref (h text 0) in
     while !i + m <= n && not !found do
       if !th = ph && String.sub text !i m = pat then found := true
       else begin
