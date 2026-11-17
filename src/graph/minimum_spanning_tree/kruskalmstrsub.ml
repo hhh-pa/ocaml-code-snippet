@@ -1,3 +1,4 @@
+(* https://www.hackerrank.com/challenges/kruskalmstrsub/problem *)
 let rec find parent x =
   if parent.(x) = x then x
   else begin

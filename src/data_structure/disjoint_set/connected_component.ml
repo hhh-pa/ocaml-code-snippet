@@ -1,3 +1,4 @@
+(* https://www.hackerrank.com/contests/data-structure-tasks-binary-tree-union-find/challenges/connected-component/problem *)
 let () =
   try
     let n = Scanf.scanf " %d" (fun x -> x) in

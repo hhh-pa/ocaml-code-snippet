@@ -1,3 +1,4 @@
+(* https://www.hackerrank.com/challenges/pairs/problem *)
 let () =
   try
     let n = Scanf.scanf " %d" (fun x -> x) in
