@@ -1,3 +1,4 @@
+(* https://www.hackerrank.com/challenges/kmp-fp/problem *)
 let read_all_tokens () =
   let content =
     let b = Buffer.create 4096 in

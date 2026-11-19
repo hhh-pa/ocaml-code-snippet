@@ -1,3 +1,4 @@
+(* https://www.hackerrank.com/challenges/sudoku/problem *)
 let box_id r c = (r / 3) * 3 + (c / 3)
 
 let solve_board () =

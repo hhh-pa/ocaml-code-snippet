@@ -1,3 +1,4 @@
+(* https://www.hackerrank.com/challenges/even-tree/problem *)
 let () =
   try
     let n = Scanf.scanf " %d" (fun x -> x) in

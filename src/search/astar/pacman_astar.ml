@@ -1,3 +1,4 @@
+(* https://www.hackerrank.com/challenges/pacman-astar/problem *)
 module NodeSet = Set.Make(struct
   type t = int * int * int (* cost, r, c *)
   let compare (c1, r1, c1_) (c2, r2, c2_) =

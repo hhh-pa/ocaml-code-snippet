@@ -1,3 +1,4 @@
+(* https://www.hackerrank.com/challenges/count-strings *)
 let mo = 1000000007L
 
 type ast =

@@ -1,3 +1,4 @@
+(* https://www.hackerrank.com/challenges/floyd-city-of-blinding-lights/problem *)
 let inf = 999999
 
 let () =
