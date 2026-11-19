@@ -28,26 +28,28 @@ For automated validation, the shared test cases from the recipes superproject (`
 
 ### CI/CD Pipeline
 
-`.github/workflows/test.yml` validates the snippets on push to `master`, pull requests, and manual dispatch. It decrypts the bundle with the `RESOURCES_PASSPHRASE` organization secret (shared with the clojure/python snippet repos) and runs a full-matrix sweep: `snip measure --repeat 1` executes every `src/**/*.ml` script against the decrypted cases, diff-gating stdout exactly like `snip test` (same command, same timeout, missing resources fail), while recording CPU/wall time and peak RSS from wait4 rusage. One run per branch supersedes the previous commit's run (master keeps every run); snippets split across 8 cohesive shards.
+`.github/workflows/test.yml` validates the snippets on push to `master`, pull requests, and manual dispatch. It pulls the `hhhpa/snippet-resources:t1263` image and decrypts the bundle with the `RESOURCES_IMAGE_PASSPHRASE` organization secret (shared with the clojure/python snippet repos) and runs a full-matrix sweep: `snip measure --repeat 1` executes every `src/**/*.ml` script against the decrypted cases, diff-gating stdout exactly like `snip test` (same command, same timeout, missing resources fail), while recording CPU/wall time and peak RSS from wait4 rusage. One run per branch supersedes the previous commit's run (master keeps every run); snippets split across 8 cohesive shards.
 
 The `test` job keeps only the harness checks (`go test ./...` plus `snip measure --self-test`), which the sweep does not run. The sweep defaults to timed-only; manual dispatch offers two inputs: `instrument` (`none`, `callgrind`, `pin`, `both`) adds instrumentation phases, and `compare` (default false) measures a from-tree and a to-tree instead — the PR base vs HEAD when the dispatched branch heads an open PR, otherwise the previous commit vs HEAD — with the report job publishing a from/to delta table (`snip compare`, informational only).
 
-To test locally, decrypt the bundle into `tests/resources/` (passphrase holders only):
+To test locally, pull the bundle image and decrypt into `tests/resources/` (passphrase holders only):
 
 ```sh
-mkdir -p tests/resources
-gpg --batch --yes --pinentry-mode loopback --passphrase "$RESOURCES_PASSPHRASE" \
-  -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
+docker pull hhhpa/snippet-resources:t1263
+CID=$(docker create hhhpa/snippet-resources:t1263 /bin/true)
+mkdir -p tests/bundle tests/resources
+docker cp "$CID:/tests/resources.tar.xz.asc" tests/bundle/ && docker rm "$CID"
+gpg --batch --yes --pinentry-mode loopback --passphrase "$RESOURCES_IMAGE_PASSPHRASE" \
+  -d tests/bundle/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
 snip test --resources tests/resources --jobs 4 --timeout 300
 ```
 
-Rebuild the bundle after resource changes with:
+Rebuild the bundle after resource changes with `snip bundle <resource/shared dir> <image-passphrase-file>` (current image passphrase), copy the bundle next to `tests/Dockerfile`, then rebuild + push the image and delete the local copy (only the image ships it):
 
 ```sh
-snip bundle <resource/shared dir> [passphrase-file]
+docker build -t hhhpa/snippet-resources:t1263 -f tests/Dockerfile tests/
+docker push hhhpa/snippet-resources:t1263
 ```
-
-See `snip bundle --help` for rotation instructions when using a fresh passphrase.
 
 ## Performance Tracking (Pin)
 
