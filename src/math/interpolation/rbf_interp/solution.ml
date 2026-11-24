@@ -1,4 +1,4 @@
-(* Radial basis function interpolation (NR 3.7). Port of the C++ reference. *)
+(* Radial basis function interpolation (NR 3.7). *)
 
 let fmt v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

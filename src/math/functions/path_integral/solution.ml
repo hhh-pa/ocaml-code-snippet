@@ -1,4 +1,4 @@
-(* Hypergeometric 2F1 by path integration (NR 5.14). Port of the C++ reference. *)
+(* Hypergeometric 2F1 by path integration (NR 5.14). *)
 
 let fmt6 v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

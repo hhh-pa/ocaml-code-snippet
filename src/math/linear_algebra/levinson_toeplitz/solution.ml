@@ -1,4 +1,4 @@
-(* Toeplitz solve in O(n^2) (NR 2.8.2, toeplz). Port of the C++ reference. *)
+(* Toeplitz solve in O(n^2) (NR 2.8.2, toeplz). *)
 
 let fmt v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

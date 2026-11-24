@@ -1,4 +1,4 @@
-(* Numerical derivative (NR 5.7, Ridders' method). Port of the C++ reference. *)
+(* Numerical derivative (NR 5.7, Ridders' method). *)
 
 let fmt6 v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

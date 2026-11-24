@@ -1,4 +1,4 @@
-(* QR decomposition (NR 2.10, QRdcmp). Port of the C++ reference. *)
+(* QR decomposition (NR 2.10, QRdcmp). *)
 
 let fmt v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

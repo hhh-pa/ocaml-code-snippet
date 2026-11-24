@@ -1,4 +1,4 @@
-(* Vandermonde solve in O(n^2) (NR 2.8.1, vander). Port of the C++ reference. *)
+(* Vandermonde solve in O(n^2) (NR 2.8.1, vander). *)
 
 let fmt v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

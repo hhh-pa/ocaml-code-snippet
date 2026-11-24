@@ -1,4 +1,4 @@
-(* Coefficients of the interpolating polynomial (NR 3.5, polcof). Port of the C++ reference. *)
+(* Coefficients of the interpolating polynomial (NR 3.5, polcof). *)
 
 let fmt v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

@@ -1,4 +1,4 @@
-(* Clenshaw's recurrence (NR 5.4). Port of the C++ reference. *)
+(* Clenshaw's recurrence (NR 5.4). *)
 
 let fmt6 v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

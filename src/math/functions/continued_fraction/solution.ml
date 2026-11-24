@@ -1,4 +1,4 @@
-(* Continued fraction evaluation (NR 5.2, modified Lentz's method). Port of the C++ reference. *)
+(* Continued fraction evaluation (NR 5.2, modified Lentz's method). *)
 
 let fmt6 v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

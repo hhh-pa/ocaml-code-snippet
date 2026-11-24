@@ -1,5 +1,5 @@
 (* Iterative refinement of a linear solve (NR 2.5, mprove).
-   Port of the C++ reference. *)
+   *)
 
 let fmt v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

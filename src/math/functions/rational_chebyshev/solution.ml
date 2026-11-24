@@ -1,4 +1,4 @@
-(* Rational Chebyshev approximation (NR 5.13, ratlsq). Port of the C++ reference. *)
+(* Rational Chebyshev approximation (NR 5.13, ratlsq). *)
 
 let fmt6 v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

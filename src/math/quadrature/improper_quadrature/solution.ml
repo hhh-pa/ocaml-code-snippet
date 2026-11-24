@@ -1,4 +1,4 @@
-(* Improper integrals (NR 4.4). Port of the C++ reference. *)
+(* Improper integrals (NR 4.4). *)
 
 let fmt6 v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

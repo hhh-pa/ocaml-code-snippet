@@ -1,4 +1,4 @@
-(* Shepard interpolation (NR 3.7.4). Port of the C++ reference. *)
+(* Shepard interpolation (NR 3.7.4). *)
 
 let fmt v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

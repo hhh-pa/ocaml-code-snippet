@@ -1,4 +1,4 @@
-(* Polynomial interpolation by Neville's algorithm (NR 3.2). Port of the C++ reference. *)
+(* Polynomial interpolation by Neville's algorithm (NR 3.2). *)
 
 let fmt v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

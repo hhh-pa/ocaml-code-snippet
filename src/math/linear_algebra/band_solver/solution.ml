@@ -1,5 +1,5 @@
 (* Band-diagonal linear solver (NR 2.4): Bandec LU with partial pivoting
-   plus determinant. Port of the C++ reference (verbatim NR algorithm). *)
+   plus determinant., following the NR algorithm verbatim. *)
 
 let fmt v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

@@ -1,5 +1,5 @@
 (* Singular value decomposition (NR 2.6 contract): one-sided Jacobi.
-   Port of the C++ reference. *)
+   *)
 
 let fmt v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

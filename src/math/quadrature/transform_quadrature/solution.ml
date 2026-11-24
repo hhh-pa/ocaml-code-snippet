@@ -1,4 +1,4 @@
-(* Quadrature by variable transformation (NR 4.5). Port of the C++ reference. *)
+(* Quadrature by variable transformation (NR 4.5). *)
 
 let fmt6 v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

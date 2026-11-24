@@ -1,4 +1,4 @@
-(* Elementary quadrature (NR 4.2). Port of the C++ reference. *)
+(* Elementary quadrature (NR 4.2). *)
 
 let fmt6 v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

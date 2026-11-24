@@ -1,4 +1,4 @@
-(* Romberg integration (NR 4.3). Port of the C++ reference. *)
+(* Romberg integration (NR 4.3). *)
 
 let fmt6 v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

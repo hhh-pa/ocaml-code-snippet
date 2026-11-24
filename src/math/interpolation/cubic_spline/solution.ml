@@ -1,4 +1,4 @@
-(* Cubic spline interpolation (NR 3.3). Port of the C++ reference. *)
+(* Cubic spline interpolation (NR 3.3). *)
 
 let fmt v =
   let w = if abs_float v < 5e-7 then 0.0 else v in

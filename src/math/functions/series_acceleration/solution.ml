@@ -1,4 +1,4 @@
-(* Series acceleration (NR 5.3): epsilon algorithm and Levin u-transform. Port of the C++ reference. *)
+(* Series acceleration (NR 5.3): epsilon algorithm and Levin u-transform. *)
 
 let fmt6 v =
   let w = if abs_float v < 5e-7 then 0.0 else v in
