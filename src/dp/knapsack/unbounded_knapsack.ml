@@ -1,3 +1,4 @@
+(* https://www.hackerrank.com/challenges/unbounded-knapsack *)
 let () =
   try
     let t = Scanf.scanf " %d" (fun x -> x) in

@@ -1,3 +1,4 @@
+(* https://www.hackerrank.com/challenges/convex-hull-fp/problem *)
 type point = { x : float; y : float }
 
 let dist p1 p2 =

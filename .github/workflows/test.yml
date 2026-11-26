@@ -26,13 +26,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
-# Test data (recipes superproject resource/shared) ships as an encrypted
-# bundle, tests/resources.tar.xz.asc (tar.xz, AES-256, ASCII-armored).
-# The passphrase lives in the RESOURCES_PASSPHRASE organization secret,
-# shared by the clojure/python/ocaml snippet repos (one passphrase,
-# identical bundles). To rotate: run `snip bundle` with a fresh
-# passphrase, set the organization secret to the same value, and
-# rebuild the sibling bundles too (see `snip bundle --help`).
+# Test data (recipes superproject resource/shared) ships inside the
+# hhhpa/snippet-resources Docker Hub image as an encrypted bundle
+# (/tests/resources.tar.xz.asc: tar.xz, AES-256, ASCII-armored),
+# decrypted with the RESOURCES_IMAGE_PASSPHRASE organization secret
+# shared by the clojure/python/ocaml snippet repos (one image, one
+# passphrase). To refresh after resource changes: run `snip bundle`
+# with the current image passphrase, rebuild + push the image (see
+# tests/Dockerfile), and re-run CI.
 
 jobs:
   # Snippet correctness lives in the sweep below (its timed runs
@@ -126,18 +127,35 @@ jobs:
           packages: ocaml ocaml-native-compilers
           version: 1.0
 
+      - name: Log in to Docker Hub (best effort)
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ] || exit 0
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io
+
+      - name: Pull test-resource image
+        run: |
+          docker pull hhhpa/snippet-resources:t1263
+          CID=$(docker create hhhpa/snippet-resources:t1263 /bin/true)
+          mkdir -p tests/bundle
+          docker cp "$CID:/tests/resources.tar.xz.asc" tests/bundle/
+          docker rm "$CID"
+
       - name: Decrypt and extract resources
         env:
-          RESOURCES_PASSPHRASE: ${{ secrets.RESOURCES_PASSPHRASE }}
+          RESOURCES_IMAGE_PASSPHRASE: ${{ secrets.RESOURCES_IMAGE_PASSPHRASE }}
         run: |
-          if [ -z "$RESOURCES_PASSPHRASE" ]; then
-            echo "error: RESOURCES_PASSPHRASE secret is not configured" >&2
+          if [ -z "$RESOURCES_IMAGE_PASSPHRASE" ]; then
+            echo "error: RESOURCES_IMAGE_PASSPHRASE secret is not configured" >&2
             exit 1
           fi
           mkdir -p tests/resources
           gpg --batch --yes --pinentry-mode loopback \
-            --passphrase "$RESOURCES_PASSPHRASE" \
-            -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
+            --passphrase "$RESOURCES_IMAGE_PASSPHRASE" \
+            -d tests/bundle/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
 
       # Instrumented dispatches only: direct apt install, no
       # cache — manual runs are rare, and a fresh install keeps

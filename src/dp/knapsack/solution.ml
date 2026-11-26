@@ -1,3 +1,4 @@
+(* https://www.hackerrank.com/contests/srin-aadc03/challenges/classic-01-knapsack/problem *)
 let () =
   try
     let t = Scanf.scanf " %d" (fun x -> x) in

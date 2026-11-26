@@ -1,3 +1,4 @@
+(* https://www.hackerearth.com/practice/algorithms/graphs/strongly-connected-components/tutorial/ *)
 let () =
   try
     let n = Scanf.scanf " %d" (fun x -> x) in
